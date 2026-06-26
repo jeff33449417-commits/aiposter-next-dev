@@ -37,6 +37,14 @@
         "binding": "JOBS_QUEUE",
         "queue": "aiposter-jobs"
       }
+    ],
+    "consumers": [
+      {
+        "queue": "aiposter-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 1
+      }
     ]
   },
   "workers_dev": false,

@@ -429,11 +429,15 @@ async function handleExportJob(request, env, user, ctx) {
   ).bind(jobId, user.id, input.projectId, initialStatus, JSON.stringify(input), initialError).run();
 
   if (rendererUrl) {
-    const renderPromise = processExportJob(env, jobId);
-    if (ctx?.waitUntil) {
-      ctx.waitUntil(renderPromise);
+    if (env.JOBS_QUEUE) {
+      await env.JOBS_QUEUE.send({ jobId }, { contentType: "json" });
     } else {
-      await renderPromise;
+      const renderPromise = processExportJob(env, jobId);
+      if (ctx?.waitUntil) {
+        ctx.waitUntil(renderPromise);
+      } else {
+        await renderPromise;
+      }
     }
   }
 
