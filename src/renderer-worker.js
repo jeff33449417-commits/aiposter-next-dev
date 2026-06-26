@@ -28,7 +28,7 @@ function isAuthorized(request, env) {
 }
 
 async function forwardToRenderer(request, env) {
-  const container = env.RENDERER.getRandom();
+  const container = env.RENDERER.getByName("shared");
   await container.startAndWaitForPorts();
   return container.fetch(request);
 }
