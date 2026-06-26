@@ -55,7 +55,7 @@
 
         .preview-frame {
             width: min(960px, 100%);
-            min-height: 178px;
+            min-height: var(--preview-frame-height, 178px);
             margin: 0 auto;
             display: flex;
             align-items: center;
@@ -66,9 +66,9 @@
         }
 
         .poster-preview {
-            width: min(860px, calc(100vw - 72px));
-            height: auto;
-            aspect-ratio: 10 / 1;
+            width: var(--screen-preview-width, min(860px, calc(100vw - 72px)));
+            height: var(--screen-preview-height, auto);
+            aspect-ratio: var(--screen-aspect-ratio, 10 / 1);
             position: relative;
             border: 2px dashed rgba(29, 37, 84, 0.22);
             background: rgba(255, 255, 255, 0.28);
@@ -86,6 +86,41 @@
             justify-content: center;
             color: rgba(29, 37, 84, 0.72);
             pointer-events: none;
+        }
+
+        .product-size-panel {
+            width: min(860px, calc(100vw - 72px));
+            margin: -2px auto 4px;
+            display: grid;
+            grid-template-columns: auto minmax(220px, 1fr) auto;
+            align-items: center;
+            gap: 12px;
+            color: var(--ink);
+            font-size: 15px;
+            font-weight: 800;
+        }
+
+        .product-size-panel label {
+            white-space: nowrap;
+        }
+
+        .product-select {
+            min-width: 0;
+            min-height: 42px;
+            padding: 6px 12px;
+            border: 2px solid rgba(29, 37, 84, 0.36);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.68);
+            color: var(--ink);
+            font: inherit;
+            cursor: pointer;
+        }
+
+        .product-size-meta {
+            color: var(--muted);
+            font-size: 13px;
+            font-weight: 800;
+            white-space: nowrap;
         }
 
         .poster-preview.has-text .preview-placeholder { display: none; }
@@ -641,9 +676,9 @@
         }
 
         .image-editor-screen .poster-preview {
-            width: min(1360px, calc(100vw - 72px));
-            height: min(54vh, 500px);
-            aspect-ratio: auto;
+            width: var(--editor-preview-width, min(1360px, calc(100vw - 72px)));
+            height: var(--editor-preview-height, min(54vh, 500px));
+            aspect-ratio: var(--screen-aspect-ratio, auto);
             border: none;
             background: transparent;
             overflow: visible;
@@ -658,8 +693,9 @@
             left: 50%;
             top: 50%;
             z-index: 20;
-            width: min(860px, calc(100% - 80px));
-            aspect-ratio: 10 / 1;
+            width: 100%;
+            height: 100%;
+            aspect-ratio: var(--screen-aspect-ratio, 10 / 1);
             border: 3px dashed rgba(29, 37, 84, 0.26);
             transform: translate(-50%, -50%);
             pointer-events: none;
@@ -1001,6 +1037,11 @@
                 gap: 10px;
             }
 
+            .product-size-panel {
+                grid-template-columns: 1fr;
+                gap: 8px;
+            }
+
             .image-editor-tools {
                 grid-template-columns: 1fr;
             }
@@ -1019,6 +1060,12 @@
             <div class="poster-preview" id="posterPreview">
                 <div class="preview-placeholder">廣告機預覽 (860 x 86)</div>
             </div>
+        </section>
+
+        <section class="product-size-panel" aria-label="產品顯示尺寸">
+            <label for="productSelect">產品尺寸</label>
+            <select class="product-select" id="productSelect" onchange="handleProductChange(this.value)"></select>
+            <span class="product-size-meta" id="productSizeMeta"></span>
         </section>
 
         <div class="arrange-row">
@@ -1225,6 +1272,31 @@
     <script>
         const TOTAL_SECONDS = 30;
         const MIN_DURATION_SECONDS = 1;
+        const AI_POSTER_PRODUCTS = [
+            { id: 'p1', no: 1, series: 'Series 1', name: 'Ai Poster S(店鋪名牌)', size: '168.75 × 300', width: 168.75, height: 300, ratio: '9:16', orientation: '直式', environment: '室內' },
+            { id: 'p2', no: 2, series: 'Series 1', name: 'Ai Poster M(促銷/櫥窗海報)', size: '337.5 × 600', width: 337.5, height: 600, ratio: '9:16', orientation: '直式', environment: '室內' },
+            { id: 'p3', no: 3, series: 'Series 1', name: 'Ai Poster M Golden', size: '270 × 480', width: 270, height: 480, ratio: '9:16', orientation: '直式', environment: '室內' },
+            { id: 'p4', no: 4, series: 'Series 1', name: 'Ai Poster L(迎賓/形象牆)', size: '675 × 1200', width: 675, height: 1200, ratio: '9:16', orientation: '直式', environment: '室內' },
+            { id: 'p5', no: 5, series: 'Series 2', name: '促銷條形屏', size: '1920 × 160', width: 1920, height: 160, ratio: '12:1', orientation: '橫式', environment: '室內' },
+            { id: 'p6', no: 6, series: 'Series 2', name: '迎賓促銷長條形屏(環繞一圈)', size: '15360 (1920×8) × 160', width: 15360, height: 160, ratio: '96:1', orientation: '橫式', environment: '室內' },
+            { id: 'p7', no: 7, series: 'Series 2', name: '迎賓促銷直立屏', size: '320 × 1920', width: 320, height: 1920, ratio: '1:6', orientation: '直式', environment: '室內' },
+            { id: 'p8', no: 8, series: 'Series 2', name: '戶外促銷條形屏', size: '1920 × 160', width: 1920, height: 160, ratio: '12:1', orientation: '橫式', environment: '戶外' },
+            { id: 'p9', no: 9, series: 'Series 2', name: '戶外促銷直立柱形屏', size: '320 × 1920', width: 320, height: 1920, ratio: '1:6', orientation: '直式', environment: '戶外' },
+            { id: 'p10', no: 10, series: 'Series 3', name: '室內騎樓雙面屏', size: '320 × 320 ×2面', width: 320, height: 320, ratio: '1:1', orientation: '正方形', environment: '室內' },
+            { id: 'p11', no: 11, series: 'Series 3', name: '戶外路邊雙面屏', size: '320 × 320 ×2面', width: 320, height: 320, ratio: '1:1', orientation: '正方形', environment: '戶外' },
+            { id: 'p12', no: 12, series: 'Series 3', name: '戶外促銷雙面條形屏', size: '960 × 320 ×2面', width: 960, height: 320, ratio: '3:1', orientation: '橫式', environment: '戶外' },
+            { id: 'p13', no: 13, series: 'Series 4', name: '四面促銷立方屏', size: '325 × 325 ×4面', width: 325, height: 325, ratio: '1:1', orientation: '正方形', environment: '室內' },
+            { id: 'p14', no: 14, series: 'Series 5', name: '雙環形促銷屏', size: '內環2560(外環3200)', width: 3200, height: 163, ratio: '圓環(非矩形)', orientation: '環形', environment: '室內', nonRectangular: true },
+            { id: 'p15', no: 15, series: 'Series 6', name: '戶外迎賓促銷直立屏', size: '640 × 1120', width: 640, height: 1120, ratio: '4:7', orientation: '直式', environment: '戶外' },
+            { id: 'p16', no: 16, series: 'Series 7', name: '戶外A字促銷屏', size: '480 × 640', width: 480, height: 640, ratio: '3:4', orientation: '直式', environment: '戶外' },
+            { id: 'p17', no: 17, series: 'Series 8', name: '透明屏 3.91', size: '1000 × 1500', width: 1000, height: 1500, ratio: '2:3', orientation: '直式', environment: '室內' },
+            { id: 'p18', no: 18, series: 'Series 8', name: '透明屏 6.25', size: '2000 × 1150', width: 2000, height: 1150, ratio: '40:23', orientation: '橫式', environment: '室內' },
+            { id: 'p19', no: 19, series: 'Series 8', name: '透明屏 10.416', size: '2000 × 2500', width: 2000, height: 2500, ratio: '4:5', orientation: '直式', environment: '室內' },
+            { id: 'p20', no: 20, series: 'Series 9', name: '戶外網格屏 25', size: '1000 × 5000', width: 1000, height: 5000, ratio: '1:5', orientation: '直式', environment: '戶外' },
+            { id: 'p21', no: 21, series: 'Series 9', name: '戶外網格屏 50', size: '1000 × 10000', width: 1000, height: 10000, ratio: '1:10', orientation: '直式', environment: '戶外' }
+        ];
+        const PRODUCT_BY_ID = new Map(AI_POSTER_PRODUCTS.map((product) => [product.id, product]));
+        let selectedProductId = 'p5';
         let dynamicMediaId = 0;
         let textLayerId = 0;
         let mediaLayerId = 0;
@@ -1243,6 +1315,97 @@
             'effect-particle',
             'effect-stretch-out'
         ];
+
+        function selectedProduct() {
+            return PRODUCT_BY_ID.get(selectedProductId) || AI_POSTER_PRODUCTS[0];
+        }
+
+        function screenRatio(product = selectedProduct()) {
+            return product.width / Math.max(1, product.height);
+        }
+
+        function fitScreenSize(maxWidth, maxHeight, product = selectedProduct()) {
+            const ratio = screenRatio(product);
+            if (ratio >= maxWidth / maxHeight) {
+                return {
+                    width: Math.max(1, Math.round(maxWidth)),
+                    height: Math.max(1, Math.round(maxWidth / ratio))
+                };
+            }
+
+            return {
+                width: Math.max(1, Math.round(maxHeight * ratio)),
+                height: Math.max(1, Math.round(maxHeight))
+            };
+        }
+
+        function exportCanvasSize(product = selectedProduct()) {
+            const ratio = screenRatio(product);
+            const maxLongSide = 1920;
+            if (ratio >= 1) {
+                return {
+                    width: maxLongSide,
+                    height: Math.max(1, Math.round(maxLongSide / ratio))
+                };
+            }
+
+            return {
+                width: Math.max(1, Math.round(maxLongSide * ratio)),
+                height: maxLongSide
+            };
+        }
+
+        function productLabel(product) {
+            return `#${product.no} ${product.name}｜${product.size}｜${product.ratio}｜${product.orientation}｜${product.environment}`;
+        }
+
+        function updateProductMeta() {
+            const product = selectedProduct();
+            const meta = document.getElementById('productSizeMeta');
+            if (!meta) return;
+            meta.textContent = `${product.size} mm｜${product.ratio}${product.nonRectangular ? '｜矩形預覽為外環展開近似' : ''}`;
+        }
+
+        function applyScreenPreviewSize() {
+            const product = selectedProduct();
+            const ratioText = `${product.width} / ${product.height}`;
+            const mainMaxWidth = Math.min(860, Math.max(260, window.innerWidth - 72));
+            const mainMaxHeight = Math.min(420, Math.max(180, window.innerHeight * 0.38));
+            const editorMaxWidth = Math.min(1360, Math.max(260, window.innerWidth - 72));
+            const editorMaxHeight = Math.min(500, Math.max(220, window.innerHeight * 0.54));
+            const mainSize = fitScreenSize(mainMaxWidth, mainMaxHeight, product);
+            const editorSize = fitScreenSize(editorMaxWidth, editorMaxHeight, product);
+
+            document.documentElement.style.setProperty('--screen-aspect-ratio', ratioText);
+            document.documentElement.style.setProperty('--screen-preview-width', `${mainSize.width}px`);
+            document.documentElement.style.setProperty('--screen-preview-height', `${mainSize.height}px`);
+            document.documentElement.style.setProperty('--preview-frame-height', `${Math.max(178, mainSize.height + 48)}px`);
+            document.documentElement.style.setProperty('--editor-preview-width', `${editorSize.width}px`);
+            document.documentElement.style.setProperty('--editor-preview-height', `${editorSize.height}px`);
+
+            document.querySelectorAll('.preview-placeholder').forEach((placeholder) => {
+                placeholder.textContent = `${product.name} (${product.size} mm)`;
+            });
+            updateProductMeta();
+            if (activeImageEdit) renderImageEditor();
+            updatePreviewPlaceholder();
+        }
+
+        function initializeProductSelector() {
+            const select = document.getElementById('productSelect');
+            if (!select) return;
+            select.innerHTML = AI_POSTER_PRODUCTS.map((product) =>
+                `<option value="${product.id}">${productLabel(product)}</option>`
+            ).join('');
+            select.value = selectedProductId;
+            applyScreenPreviewSize();
+        }
+
+        function handleProductChange(productId) {
+            if (!PRODUCT_BY_ID.has(productId)) return;
+            selectedProductId = productId;
+            applyScreenPreviewSize();
+        }
 
         function showFileName(input, labelId) {
             const label = labelId ? document.getElementById(labelId) : input.closest('.content-slot')?.querySelector('.upload-label');
@@ -3159,8 +3322,9 @@
 
         async function recordPreviewWebM() {
             const canvas = document.createElement('canvas');
-            canvas.width = 860;
-            canvas.height = 86;
+            const canvasSize = exportCanvasSize();
+            canvas.width = canvasSize.width;
+            canvas.height = canvasSize.height;
             const ctx = canvas.getContext('2d');
             const stream = canvas.captureStream(60);
             const chunks = [];
@@ -3206,6 +3370,8 @@
                 if (previewPlaybackId) stopTimelinePreview();
                 const webmBlob = await recordPreviewWebM();
                 const sourceAsset = await uploadAssetToCloud(webmBlob, 'ai_poster_preview.webm');
+                const product = selectedProduct();
+                const canvasSize = exportCanvasSize(product);
                 const response = await fetch('/api/jobs/export', {
                     method: 'POST',
                     headers: {
@@ -3216,6 +3382,15 @@
                         settings: {
                             sourceAssetId: sourceAsset?.id || null,
                             sourceAssetUrl: sourceAsset?.downloadUrl || null,
+                            productId: product.id,
+                            productName: product.name,
+                            displaySizeMm: product.size,
+                            displayWidthMm: product.width,
+                            displayHeightMm: product.height,
+                            displayRatio: product.ratio,
+                            displayOrientation: product.orientation,
+                            exportWidth: canvasSize.width,
+                            exportHeight: canvasSize.height,
                             durationSeconds: TOTAL_SECONDS,
                             frameRate: 60
                         }
@@ -3239,6 +3414,9 @@
                 btn.innerText = "安排";
             }
         }
+
+        initializeProductSelector();
+        window.addEventListener('resize', applyScreenPreviewSize);
     </script>
 </body>
 </html>
