@@ -305,25 +305,26 @@
             align-items: center;
             gap: 18px;
             min-height: 58px;
+            flex-wrap: wrap;
         }
 
         .export-jobs-panel {
-            width: min(860px, calc(100vw - 72px));
-            margin: -2px auto 4px;
             display: none;
-            gap: 8px;
+            align-items: center;
+            min-height: 54px;
         }
 
         .export-jobs-panel.has-jobs {
-            display: grid;
+            display: flex;
         }
 
         .export-job {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            gap: 10px;
+            display: flex;
+            gap: 12px;
             align-items: center;
-            padding: 10px 14px;
+            justify-content: flex-start;
+            min-height: 54px;
+            padding: 8px 12px;
             border: 2px solid rgba(29, 37, 84, 0.26);
             background: rgba(255, 255, 255, 0.42);
             color: var(--ink);
@@ -1097,9 +1098,8 @@
         <div class="arrange-row">
             <button class="action-btn preview-btn" id="previewBtn" onclick="toggleTimelinePreview()">預覽</button>
             <button class="action-btn arrange-btn" id="arrangeBtn" onclick="executeArrangement()">安排</button>
+            <section class="export-jobs-panel" id="exportJobsPanel" aria-label="此次輸出工作狀態"></section>
         </div>
-
-        <section class="export-jobs-panel" id="exportJobsPanel" aria-label="輸出工作狀態"></section>
 
         <section class="ruler-row" aria-label="30 秒時間軸">
             <div class="timeline-ruler">
@@ -3138,15 +3138,8 @@
             panel.classList.toggle('has-jobs', jobs.length > 0);
             panel.innerHTML = jobs.map((job) => `
                 <article class="export-job">
-                    <div>
-                        <div class="export-job-title">上次處理文件</div>
-                        <div class="export-job-meta">${escapeText(job.message || job.error_message || job.errorMessage || job.id || '預覽檔已送出')}</div>
-                    </div>
-                    <div class="row">
-                        ${jobOutputUrl(job) ? `<a class="export-link" href="${escapeText(jobOutputUrl(job))}" target="_blank" rel="noopener" download>下載 H.265 MP4</a>` : ''}
-                        ${jobSourceAssetUrl(job) ? `<a class="export-link" href="${escapeText(jobSourceAssetUrl(job))}" target="_blank" rel="noopener" download>查看/下載預覽檔</a>` : ''}
-                        <span class="export-status ${escapeText(job.status)}">${escapeText(exportStatusLabel(job.status))}</span>
-                    </div>
+                    <span class="export-status ${escapeText(job.status)}">${escapeText(exportStatusLabel(job.status))}</span>
+                    ${jobOutputUrl(job) ? `<a class="export-link" href="${escapeText(jobOutputUrl(job))}" target="_blank" rel="noopener" download>下載 H.265 MP4</a>` : ''}
                 </article>
             `).join('');
         }
@@ -3200,7 +3193,7 @@
 
                 if (Date.now() >= expiresAt) {
                     stopPolling();
-                    loadExportJobs();
+                    renderExportJobs();
                 }
             };
 
@@ -3209,8 +3202,6 @@
             exportJobPollers.set(jobId, poller);
             pollOnce();
         }
-
-        loadExportJobs();
 
         function loadExportImage(src) {
             if (exportAssetCache.has(src)) return exportAssetCache.get(src);
@@ -3431,6 +3422,8 @@
             const btn = document.getElementById('arrangeBtn');
             btn.disabled = true;
             btn.innerText = "輸出中...";
+            exportJobs.clear();
+            upsertExportJob({ id: 'current-export', status: 'processing' });
             try {
                 if (previewPlaybackId) stopTimelinePreview();
                 const webmBlob = await recordPreviewWebM();
