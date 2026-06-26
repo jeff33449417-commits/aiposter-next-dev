@@ -59,15 +59,38 @@
             margin: 0 auto;
             display: flex;
             align-items: center;
-            justify-content: center;
+            justify-content: flex-start;
+            padding: 0 44px;
+            overflow-x: auto;
+            overflow-y: hidden;
             border: 3px solid var(--line);
             background: rgba(255, 255, 255, 0.18);
             box-shadow: var(--shadow);
+            scroll-behavior: smooth;
+            scrollbar-color: rgba(29, 37, 84, 0.34) rgba(255, 255, 255, 0.28);
+        }
+
+        .preview-frame::-webkit-scrollbar,
+        .editor-preview-frame::-webkit-scrollbar {
+            height: 12px;
+        }
+
+        .preview-frame::-webkit-scrollbar-track,
+        .editor-preview-frame::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.28);
+        }
+
+        .preview-frame::-webkit-scrollbar-thumb,
+        .editor-preview-frame::-webkit-scrollbar-thumb {
+            background: rgba(29, 37, 84, 0.34);
+            border-radius: 999px;
         }
 
         .poster-preview {
             width: var(--screen-preview-width, min(860px, calc(100vw - 72px)));
             height: var(--screen-preview-height, auto);
+            flex: 0 0 auto;
+            margin: 0 auto;
             aspect-ratio: var(--screen-aspect-ratio, 10 / 1);
             position: relative;
             border: 2px dashed rgba(29, 37, 84, 0.22);
@@ -669,7 +692,10 @@
             margin: 0 auto 18px;
             display: flex;
             align-items: center;
-            justify-content: center;
+            justify-content: flex-start;
+            padding: 0 44px;
+            overflow-x: auto;
+            overflow-y: hidden;
             border: none;
             background: transparent;
             box-shadow: none;
@@ -1339,6 +1365,22 @@
             };
         }
 
+        function readablePreviewSize(maxWidth, maxHeight, product = selectedProduct(), options = {}) {
+            const ratio = screenRatio(product);
+            const size = fitScreenSize(maxWidth, maxHeight, product);
+            const minWideHeight = options.minWideHeight || 44;
+            const maxScrollableWidth = options.maxScrollableWidth || maxWidth;
+
+            if (ratio >= 24 && size.height < minWideHeight) {
+                return {
+                    width: Math.min(Math.round(minWideHeight * ratio), Math.round(maxScrollableWidth)),
+                    height: minWideHeight
+                };
+            }
+
+            return size;
+        }
+
         function exportCanvasSize(product = selectedProduct()) {
             const ratio = screenRatio(product);
             const maxLongSide = 1920;
@@ -1363,7 +1405,8 @@
             const product = selectedProduct();
             const meta = document.getElementById('productSizeMeta');
             if (!meta) return;
-            meta.textContent = `${product.size} mm｜${product.ratio}${product.nonRectangular ? '｜矩形預覽為外環展開近似' : ''}`;
+            const swipeHint = screenRatio(product) >= 24 ? '｜可左右滑動查看' : '';
+            meta.textContent = `${product.size} mm｜${product.ratio}${product.nonRectangular ? '｜矩形預覽為外環展開近似' : ''}${swipeHint}`;
         }
 
         function applyScreenPreviewSize() {
@@ -1373,13 +1416,19 @@
             const mainMaxHeight = Math.min(420, Math.max(180, window.innerHeight * 0.38));
             const editorMaxWidth = Math.min(1360, Math.max(260, window.innerWidth - 72));
             const editorMaxHeight = Math.min(500, Math.max(220, window.innerHeight * 0.54));
-            const mainSize = fitScreenSize(mainMaxWidth, mainMaxHeight, product);
-            const editorSize = fitScreenSize(editorMaxWidth, editorMaxHeight, product);
+            const mainSize = readablePreviewSize(mainMaxWidth, mainMaxHeight, product, {
+                minWideHeight: 44,
+                maxScrollableWidth: mainMaxWidth * 6
+            });
+            const editorSize = readablePreviewSize(editorMaxWidth, editorMaxHeight, product, {
+                minWideHeight: 72,
+                maxScrollableWidth: editorMaxWidth * 5
+            });
 
             document.documentElement.style.setProperty('--screen-aspect-ratio', ratioText);
             document.documentElement.style.setProperty('--screen-preview-width', `${mainSize.width}px`);
             document.documentElement.style.setProperty('--screen-preview-height', `${mainSize.height}px`);
-            document.documentElement.style.setProperty('--preview-frame-height', `${Math.max(178, mainSize.height + 48)}px`);
+            document.documentElement.style.setProperty('--preview-frame-height', `${Math.max(178, mainSize.height + 64)}px`);
             document.documentElement.style.setProperty('--editor-preview-width', `${editorSize.width}px`);
             document.documentElement.style.setProperty('--editor-preview-height', `${editorSize.height}px`);
 
@@ -1389,6 +1438,11 @@
             updateProductMeta();
             if (activeImageEdit) renderImageEditor();
             updatePreviewPlaceholder();
+            requestAnimationFrame(() => {
+                document.querySelectorAll('.preview-frame, .editor-preview-frame').forEach((frame) => {
+                    frame.scrollLeft = Math.max(0, (frame.scrollWidth - frame.clientWidth) / 2);
+                });
+            });
         }
 
         function initializeProductSelector() {
