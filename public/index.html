@@ -3113,13 +3113,21 @@
 
         function exportStatusLabel(status) {
             const labels = {
+                recording: '產生預覽檔',
+                uploading: '上傳預覽檔',
+                creating_job: '建立轉檔工作',
                 queued: '排隊中',
-                processing: '處理中',
+                processing: 'H.265 轉檔中',
                 waiting_renderer: '等待轉檔服務',
                 completed: '已完成',
                 failed: '失敗'
             };
             return labels[status] || status || '未知';
+        }
+
+        function exportJobMessage(job) {
+            const message = job?.message || job?.error_message || job?.errorMessage || '';
+            return message ? message.replace(/\s+/g, ' ').slice(0, 80) : '';
         }
 
         function jobSourceAssetUrl(job) {
@@ -3139,6 +3147,7 @@
             panel.innerHTML = jobs.map((job) => `
                 <article class="export-job">
                     <span class="export-status ${escapeText(job.status)}">${escapeText(exportStatusLabel(job.status))}</span>
+                    ${exportJobMessage(job) ? `<span class="export-job-meta">${escapeText(exportJobMessage(job))}</span>` : ''}
                     ${jobOutputUrl(job) ? `<a class="export-link" href="${escapeText(jobOutputUrl(job))}" target="_blank" rel="noopener" download>下載 H.265 MP4</a>` : ''}
                 </article>
             `).join('');
@@ -3236,7 +3245,28 @@
             return promise;
         }
 
-        function clipRectForCanvas(layer, previewRect, scaleX, scaleY) {
+        function percentBoxForLayer(layer, clip) {
+            const state = clip?._posterImageState || clip?._posterVideoState || clip?._imageEditState;
+            if (state?.box) return state.box;
+            return {
+                left: parseFloat(layer.style.left) || 0,
+                top: parseFloat(layer.style.top) || 0,
+                width: parseFloat(layer.style.width) || 100,
+                height: parseFloat(layer.style.height) || 100
+            };
+        }
+
+        function clipRectForCanvas(layer, canvas, previewRect, scaleX, scaleY, clip) {
+            const percentBox = percentBoxForLayer(layer, clip);
+            if (Number.isFinite(percentBox.left) && Number.isFinite(percentBox.top) && Number.isFinite(percentBox.width) && Number.isFinite(percentBox.height)) {
+                return {
+                    x: canvas.width * percentBox.left / 100,
+                    y: canvas.height * percentBox.top / 100,
+                    width: canvas.width * percentBox.width / 100,
+                    height: canvas.height * percentBox.height / 100
+                };
+            }
+
             const rect = layer.getBoundingClientRect();
             return {
                 x: (rect.left - previewRect.left) * scaleX,
@@ -3363,7 +3393,7 @@
 
                 const layer = prepareClipPreviewLayer(clip);
                 if (!layer) continue;
-                const box = clipRectForCanvas(layer, previewRect, scaleX, scaleY);
+                const box = clipRectForCanvas(layer, canvas, previewRect, scaleX, scaleY, clip);
                 const effect = exportEffectOpacity(clip, elapsedSeconds);
 
                 if (clip.querySelector('.content-input')) {
@@ -3387,7 +3417,7 @@
             const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
                 ? 'video/webm;codecs=vp9'
                 : 'video/webm';
-            const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 12000000 });
+            const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 6000000 });
             recorder.ondataavailable = (event) => {
                 if (event.data.size) chunks.push(event.data);
             };
@@ -3423,11 +3453,13 @@
             btn.disabled = true;
             btn.innerText = "輸出中...";
             exportJobs.clear();
-            upsertExportJob({ id: 'current-export', status: 'processing' });
+            upsertExportJob({ id: 'current-export', status: 'recording' });
             try {
                 if (previewPlaybackId) stopTimelinePreview();
                 const webmBlob = await recordPreviewWebM();
+                upsertExportJob({ id: 'current-export', status: 'uploading' });
                 const sourceAsset = await uploadAssetToCloud(webmBlob, 'ai_poster_preview.webm');
+                upsertExportJob({ id: 'current-export', status: 'creating_job' });
                 const product = selectedProduct();
                 const canvasSize = exportCanvasSize(product);
                 const response = await fetch('/api/jobs/export', {
@@ -3461,6 +3493,7 @@
                 upsertExportJob(data.job);
                 pollExportJob(data.job.id);
             } catch (error) {
+                upsertExportJob({ id: 'current-export', status: 'failed', errorMessage: error.message || '雲端輸出服務尚未啟用，請稍後再試。' });
                 alert(`安排失敗！${error.message || '雲端輸出服務尚未啟用，請稍後再試。'}`);
             } finally {
                 btn.disabled = false;

@@ -46,7 +46,7 @@ function runFfmpeg(inputPath, outputPath, frameRate) {
     "-preset",
     process.env.X265_PRESET || "medium",
     "-crf",
-    process.env.X265_CRF || "24",
+    process.env.X265_CRF || "28",
     "-movflags",
     "+faststart"
   ];
