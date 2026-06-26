@@ -99,6 +99,40 @@ CLOUDFLARE_API_TOKEN
 
 The workflow deploys the renderer Worker/Container, stores `https://renderer.aiposter.jp/render` as `RENDERER_URL` on the main Worker, and optionally redeploys the main Worker.
 
+Recommended Cloudflare API token permissions for the GitHub secret:
+
+```text
+Account / Workers Scripts / Edit
+Account / Workers KV Storage / Edit
+Account / D1 / Edit
+Account / Queues / Edit
+Account / Containers / Edit
+Account / Cloudchamber / Edit
+Zone / Zone / Read
+Zone / Workers Routes / Edit
+```
+
+Limit the token to account `6791879effd82436b651aac6abafebbe` and the zones:
+
+```text
+aiposter.jp
+aiposter.tw
+```
+
+If Cloudflare's token UI does not show one of the container-related permissions, create a broader temporary token for the first deployment, run the workflow once, then replace it with a narrower token after deployment is confirmed.
+
+After adding the secret, run:
+
+```text
+GitHub repo -> Actions -> Deploy AI Poster Renderer -> Run workflow
+```
+
+If it fails, open the failed run and check the failing step name first. The most likely failures are:
+
+- `Deploy renderer Worker and Container`: missing Docker support on the runner, missing Containers permission, or Cloudflare Containers beta not enabled.
+- `Set main Worker RENDERER_URL`: token is missing Workers Scripts edit permission.
+- `Deploy main Worker`: token is missing one of the existing app binding permissions, such as D1, KV, Queues, R2, or route access.
+
 ## Worker Configuration
 
 Set these secrets/vars for the Cloudflare Worker:
