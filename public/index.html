@@ -889,6 +889,15 @@
             color: #fff;
         }
 
+        .editor-action-btn.primary.is-processing,
+        .editor-action-btn.primary:disabled {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+            cursor: wait;
+            opacity: 1;
+        }
+
         .editor-action-btn.is-active {
             background: var(--danger);
             color: #fff;
@@ -1208,7 +1217,7 @@
             <div class="editor-actions">
                 <button class="editor-action-btn" id="cutModeBtn" type="button" onclick="toggleCutMode()">切割</button>
                 <button class="editor-action-btn" type="button" onclick="cancelImageEdit()">取消</button>
-                <button class="editor-action-btn primary" type="button" onclick="finishImageEdit()">編輯完成</button>
+                <button class="editor-action-btn primary" id="finishImageEditBtn" type="button" onclick="finishImageEdit()">編輯完成</button>
             </div>
         </div>
     </section>
@@ -1823,6 +1832,7 @@
             document.getElementById('mediaEditorTitle').textContent = '圖片編輯';
             document.body.classList.add('image-editing');
             resetCutButton();
+            resetFinishEditButton();
             renderImageEditor();
         }
 
@@ -1855,6 +1865,7 @@
             document.getElementById('mediaEditorTitle').textContent = '視頻編輯';
             document.body.classList.add('image-editing');
             resetCutButton();
+            resetFinishEditButton();
             renderImageEditor();
         }
 
@@ -2001,35 +2012,62 @@
             activeImageEdit = null;
             document.body.classList.remove('image-editing');
             resetCutButton();
+            resetFinishEditButton();
+        }
+
+        function setFinishEditButtonProcessing() {
+            const btn = document.getElementById('finishImageEditBtn');
+            if (!btn) return false;
+            if (btn.disabled) return false;
+            btn.disabled = true;
+            btn.classList.add('is-processing');
+            btn.textContent = '請稍後';
+            return true;
+        }
+
+        function resetFinishEditButton() {
+            const btn = document.getElementById('finishImageEditBtn');
+            if (!btn) return;
+            btn.disabled = false;
+            btn.classList.remove('is-processing');
+            btn.textContent = '編輯完成';
         }
 
         async function finishImageEdit() {
             if (!activeImageEdit) return;
-            await applyPendingCutSelection();
-            if (activeImageEdit.mediaType === 'video') {
-                await finishVideoEdit();
-                return;
+            if (!setFinishEditButtonProcessing()) return;
+
+            try {
+                await applyPendingCutSelection();
+                if (activeImageEdit.mediaType === 'video') {
+                    await finishVideoEdit();
+                    return;
+                }
+                const { clip, input, imageUrl, imageSize } = activeImageEdit;
+                const state = imageEditStateFromControls();
+                clip._editorImageState = state;
+                clip._posterImageState = imageStateForPosterPreviewFromEditor(imageSize);
+                clip._imageEditState = clip._posterImageState;
+                clip._imageUrl = imageUrl;
+                clip._imageAspectRatio = imageSize.width / Math.max(1, imageSize.height);
+                syncMediaPreview(clip);
+                const layer = getMediaLayer(clip, true);
+                applyImageStateToLayer(layer, clip._posterImageState, imageUrl);
+                if (layer) {
+                    layer.firstChild.nodeValue = '';
+                    layer.dataset.fixedRatio = 'true';
+                    layer.dataset.aspectRatio = String(clip._imageAspectRatio);
+                }
+                await backupClipAssetToCloud(clip, input);
+                activeImageEdit = null;
+                document.body.classList.remove('image-editing');
+                resetCutButton();
+                resetFinishEditButton();
+                updatePreviewPlaceholder();
+            } catch (error) {
+                resetFinishEditButton();
+                alert(`編輯尚未完成：${error.message || '請稍後再試。'}`);
             }
-            const { clip, input, imageUrl, imageSize } = activeImageEdit;
-            const state = imageEditStateFromControls();
-            clip._editorImageState = state;
-            clip._posterImageState = imageStateForPosterPreviewFromEditor(imageSize);
-            clip._imageEditState = clip._posterImageState;
-            clip._imageUrl = imageUrl;
-            clip._imageAspectRatio = imageSize.width / Math.max(1, imageSize.height);
-            syncMediaPreview(clip);
-            const layer = getMediaLayer(clip, true);
-            applyImageStateToLayer(layer, clip._posterImageState, imageUrl);
-            if (layer) {
-                layer.firstChild.nodeValue = '';
-                layer.dataset.fixedRatio = 'true';
-                layer.dataset.aspectRatio = String(clip._imageAspectRatio);
-            }
-            await backupClipAssetToCloud(clip, input);
-            activeImageEdit = null;
-            document.body.classList.remove('image-editing');
-            resetCutButton();
-            updatePreviewPlaceholder();
         }
 
         async function finishVideoEdit() {
@@ -2041,6 +2079,7 @@
             activeImageEdit = null;
             document.body.classList.remove('image-editing');
             resetCutButton();
+            resetFinishEditButton();
             updatePreviewPlaceholder();
         }
 
