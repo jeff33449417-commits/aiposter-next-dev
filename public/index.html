@@ -3177,30 +3177,37 @@
         function pollExportJob(jobId) {
             if (!jobId || exportJobPollers.has(jobId)) return;
 
-            let attempts = 0;
-            const poller = setInterval(async () => {
-                attempts++;
+            const expiresAt = Date.now() + 30 * 60 * 1000;
+            let poller = null;
+            const stopPolling = () => {
+                if (poller) clearInterval(poller);
+                exportJobPollers.delete(jobId);
+            };
+
+            const pollOnce = async () => {
                 try {
                     const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
                     const data = await parseApiJson(response);
                     if (response.ok && data.ok && data.job) {
                         upsertExportJob(data.job);
                         if (['completed', 'failed', 'waiting_renderer'].includes(data.job.status)) {
-                            clearInterval(poller);
-                            exportJobPollers.delete(jobId);
+                            stopPolling();
                         }
                     }
                 } catch (error) {
                     console.warn('Unable to poll export job:', error);
                 }
 
-                if (attempts >= 20) {
-                    clearInterval(poller);
-                    exportJobPollers.delete(jobId);
+                if (Date.now() >= expiresAt) {
+                    stopPolling();
+                    loadExportJobs();
                 }
-            }, 3000);
+            };
+
+            poller = setInterval(pollOnce, 5000);
 
             exportJobPollers.set(jobId, poller);
+            pollOnce();
         }
 
         loadExportJobs();
