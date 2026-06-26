@@ -3460,11 +3460,6 @@
                 }
                 upsertExportJob(data.job);
                 pollExportJob(data.job.id);
-                if (data.job.status === 'waiting_renderer') {
-                    alert(`已保存預覽檔到 R2，並建立輸出工作：${data.job.id}。目前正在等待 H.265 轉檔後端接上。`);
-                } else {
-                    alert(`已建立雲端輸出工作：${data.job.id}。目前已先把預覽檔存到 R2，系統會接續處理。`);
-                }
             } catch (error) {
                 alert(`安排失敗！${error.message || '雲端輸出服務尚未啟用，請稍後再試。'}`);
             } finally {
