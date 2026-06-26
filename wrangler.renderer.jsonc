@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aiposter-renderer",
+  "account_id": "6791879effd82436b651aac6abafebbe",
+  "main": "src/renderer-worker.js",
+  "compatibility_date": "2026-06-24",
+  "observability": {
+    "enabled": true
+  },
+  "containers": [
+    {
+      "class_name": "AiposterRenderer",
+      "image": "./renderer/Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 3
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RENDERER",
+        "class_name": "AiposterRenderer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "AiposterRenderer"
+      ]
+    }
+  ],
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "renderer.aiposter.jp",
+      "custom_domain": true
+    }
+  ]
+}

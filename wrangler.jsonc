@@ -1,0 +1,57 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aiposter-new",
+  "account_id": "6791879effd82436b651aac6abafebbe",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-24",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "aiposter",
+      "database_id": "373b9a96-fd80-48d9-bd84-f33f06eab7a8"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "APP_KV",
+      "id": "66589545d7ff4098b86cac717f08ca07"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ASSETS_BUCKET",
+      "bucket_name": "aiposter-assets"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "JOBS_QUEUE",
+        "queue": "aiposter-jobs"
+      }
+    ]
+  },
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "my.aiposter.jp",
+      "custom_domain": true
+    },
+    {
+      "pattern": "my.aiposter.tw",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "APP_ENV": "production",
+    "OWNER_EMAIL": "Jeff33449417@gmail.com"
+  }
+}

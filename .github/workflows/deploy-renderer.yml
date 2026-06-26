@@ -1,0 +1,48 @@
+name: Deploy AI Poster Renderer
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_main_worker:
+        description: "Deploy aiposter-new after setting RENDERER_URL"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NPM_CONFIG_CACHE: .npm-cache
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      RENDERER_URL: https://renderer.aiposter.jp/render
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax check
+        run: |
+          node --check src/index.js
+          node --check src/renderer-worker.js
+          node --check renderer/server.js
+
+      - name: Check Docker
+        run: docker version
+
+      - name: Deploy renderer Worker and Container
+        run: npx wrangler deploy --config wrangler.renderer.jsonc
+
+      - name: Set main Worker RENDERER_URL
+        run: printf '%s' "$RENDERER_URL" | npx wrangler secret put RENDERER_URL
+
+      - name: Deploy main Worker
+        if: ${{ inputs.deploy_main_worker }}
+        run: npx wrangler deploy

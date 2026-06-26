@@ -1,0 +1,16 @@
+{
+  "name": "aiposter-next-dev",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "renderer": "node renderer/server.js",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.1.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
