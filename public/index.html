@@ -1386,15 +1386,19 @@
             const maxLongSide = 1920;
             if (ratio >= 1) {
                 return {
-                    width: maxLongSide,
-                    height: Math.max(1, Math.round(maxLongSide / ratio))
+                    width: evenExportDimension(maxLongSide),
+                    height: evenExportDimension(maxLongSide / ratio)
                 };
             }
 
             return {
-                width: Math.max(1, Math.round(maxLongSide * ratio)),
-                height: maxLongSide
+                width: evenExportDimension(maxLongSide * ratio),
+                height: evenExportDimension(maxLongSide)
             };
+        }
+
+        function evenExportDimension(value) {
+            return Math.max(2, Math.round(value / 2) * 2);
         }
 
         function productLabel(product) {
