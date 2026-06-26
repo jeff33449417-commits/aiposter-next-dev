@@ -2918,8 +2918,8 @@
             panel.innerHTML = jobs.map((job) => `
                 <article class="export-job">
                     <div>
-                        <div class="export-job-title">最新輸出工作 ${escapeText(job.id)}</div>
-                        <div class="export-job-meta">${escapeText(job.message || job.error_message || job.errorMessage || '預覽檔已送出')}</div>
+                        <div class="export-job-title">上次處理文件</div>
+                        <div class="export-job-meta">${escapeText(job.message || job.error_message || job.errorMessage || job.id || '預覽檔已送出')}</div>
                     </div>
                     <div class="row">
                         ${jobOutputUrl(job) ? `<a class="export-link" href="${escapeText(jobOutputUrl(job))}" target="_blank" rel="noopener" download>下載 H.265 MP4</a>` : ''}
