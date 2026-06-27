@@ -1417,7 +1417,8 @@
         let previewPlaybackStart = 0;
         let activeImageEdit = null;
         let activeTimelineClip = null;
-        const EXPORT_FRAME_RATE = 30;
+        const EXPORT_FRAME_RATE = 60;
+        const EXPORT_MAX_LONG_SIDE = 960;
         const PREVIEW_EFFECT_CLASSES = [
             'effect-typewriter',
             'effect-fade-up',
@@ -1471,17 +1472,16 @@
 
         function exportCanvasSize(product = selectedProduct()) {
             const ratio = screenRatio(product);
-            const maxLongSide = 1920;
             if (ratio >= 1) {
                 return {
-                    width: evenExportDimension(maxLongSide),
-                    height: evenExportDimension(maxLongSide / ratio)
+                    width: evenExportDimension(EXPORT_MAX_LONG_SIDE),
+                    height: evenExportDimension(EXPORT_MAX_LONG_SIDE / ratio)
                 };
             }
 
             return {
-                width: evenExportDimension(maxLongSide * ratio),
-                height: evenExportDimension(maxLongSide)
+                width: evenExportDimension(EXPORT_MAX_LONG_SIDE * ratio),
+                height: evenExportDimension(EXPORT_MAX_LONG_SIDE)
             };
         }
 
