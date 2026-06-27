@@ -3462,6 +3462,7 @@
                 video.muted = true;
                 video.loop = true;
                 video.playsInline = true;
+                video.preload = 'auto';
                 video.onloadedmetadata = async () => {
                     try {
                         video.currentTime = 0;
@@ -3474,6 +3475,40 @@
             });
             exportAssetCache.set(src, promise);
             return promise;
+        }
+
+        function waitForVideoFrame(video, timeout = 80) {
+            if (!video || video.readyState >= 2) return Promise.resolve();
+            return new Promise((resolve) => {
+                const cleanup = () => {
+                    clearTimeout(timer);
+                    video.removeEventListener('seeked', cleanup);
+                    video.removeEventListener('loadeddata', cleanup);
+                    video.removeEventListener('timeupdate', cleanup);
+                    resolve();
+                };
+                const timer = setTimeout(cleanup, timeout);
+                video.addEventListener('seeked', cleanup, { once: true });
+                video.addEventListener('loadeddata', cleanup, { once: true });
+                video.addEventListener('timeupdate', cleanup, { once: true });
+            });
+        }
+
+        async function syncExportVideoToTime(video, clip, elapsedSeconds) {
+            if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
+                try { await video?.play?.(); } catch (error) {}
+                return;
+            }
+            const start = parseFloat(clip.dataset.start) || 0;
+            const localTime = Math.max(0, elapsedSeconds - start);
+            const targetTime = Math.min(video.duration - 0.04, localTime % video.duration);
+            if (Math.abs(video.currentTime - targetTime) > 0.18 || video.paused) {
+                try {
+                    video.currentTime = Math.max(0, targetTime);
+                    await waitForVideoFrame(video);
+                } catch (error) {}
+            }
+            try { await video.play(); } catch (error) {}
         }
 
         function percentBoxForLayer(layer, clip) {
@@ -3576,11 +3611,12 @@
             ctx.restore();
         }
 
-        async function drawVideoClip(ctx, clip, layer, box, effect) {
+        async function drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds) {
             const state = clip._posterVideoState || clip._editorVideoState || fullMediaState();
             const video = clip._videoUrl
                 ? await loadExportVideo(clip._videoUrl)
                 : layer.querySelector('.preview-media-element');
+            await syncExportVideoToTime(video, clip, elapsedSeconds);
             if (!video.videoWidth || !video.videoHeight) return;
             const crop = state.crop;
             const sx = video.videoWidth * crop.left / 100;
@@ -3645,7 +3681,7 @@
                 } else if (clip._imageUrl) {
                     await drawImageClip(ctx, clip, layer, box, effect);
                 } else if (clip._videoUrl || layer.querySelector('.preview-media-element')) {
-                    await drawVideoClip(ctx, clip, layer, box, effect);
+                    await drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds);
                 }
             }
         }
