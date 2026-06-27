@@ -227,14 +227,16 @@
 
         .preview-layer-resize {
             position: absolute;
-            right: 0;
-            bottom: 0;
-            width: 12px;
-            height: 12px;
+            right: -6px;
+            bottom: -6px;
+            width: 22px;
+            height: 22px;
             border-left: 3px solid rgba(37, 99, 235, 0.85);
             border-top: 3px solid rgba(37, 99, 235, 0.85);
+            border-radius: 4px;
             cursor: nwse-resize;
             background: rgba(255, 255, 255, 0.8);
+            touch-action: none;
         }
 
         .effect-typewriter { animation: typewriterPreview 1s steps(12, end); }
@@ -575,6 +577,7 @@
             z-index: 5;
             cursor: ew-resize;
             background: rgba(29, 37, 84, 0.08);
+            touch-action: none;
         }
 
         .resize-handle::after {
@@ -785,6 +788,7 @@
             transform: translate(-50%, -50%);
             z-index: 3;
             cursor: grab;
+            touch-action: none;
         }
 
         .corner-tl { left: 0; top: 0; }
@@ -801,6 +805,7 @@
 
         .editor-resize-handle {
             border: 1px solid rgba(37, 99, 235, 0.4);
+            touch-action: none;
         }
 
         .resize-e,
@@ -1077,8 +1082,51 @@
             .text-weight { width: 38px; }
             .text-size { width: 46px; }
 
-            .resize-handle { width: 14px; }
-            .resize-handle::after { height: 22px; }
+            .resize-handle {
+                width: 34px;
+                background: rgba(29, 37, 84, 0.12);
+            }
+
+            .resize-handle::after {
+                width: 5px;
+                height: 36px;
+                border-left-width: 3px;
+                border-right-width: 3px;
+            }
+
+            .preview-layer-resize {
+                right: -13px;
+                bottom: -13px;
+                width: 36px;
+                height: 36px;
+                border-left-width: 4px;
+                border-top-width: 4px;
+            }
+
+            .corner-handle {
+                width: 30px;
+                height: 30px;
+                border-width: 3px;
+            }
+
+            .editor-resize-handle.resize-e {
+                right: -14px;
+                width: 28px;
+            }
+
+            .editor-resize-handle.resize-s {
+                bottom: -14px;
+                height: 28px;
+            }
+
+            .editor-resize-handle.resize-se {
+                right: -18px;
+                bottom: -18px;
+                width: 44px;
+                height: 44px;
+                border-radius: 8px;
+                background: rgba(37, 99, 235, 0.2);
+            }
 
             .action-btn {
                 min-width: 132px;
@@ -2495,6 +2543,8 @@
                     resize,
                     crop,
                     cropEdge,
+                    pointerId: event.pointerId,
+                    minBoxSize: event.pointerType === 'touch' ? 12 : 8,
                     pointerX: event.clientX,
                     pointerY: event.clientY,
                     previewWidth: previewRect.width,
@@ -2516,7 +2566,7 @@
             });
 
             document.addEventListener('pointermove', (event) => {
-                if (!state || !activeImageEdit || preview.dataset.viewportGesture === 'pinch') return;
+                if (!state || event.pointerId !== state.pointerId || !activeImageEdit || preview.dataset.viewportGesture === 'pinch') return;
                 const dxPercent = ((event.clientX - state.pointerX) / state.previewWidth) * 100;
                 const dyPercent = ((event.clientY - state.pointerY) / state.previewHeight) * 100;
                 const next = JSON.parse(JSON.stringify(state.editState));
@@ -2530,10 +2580,10 @@
                     point.y = clamp(state.editState.corners[state.corner].y + dyPercent, 0, 100);
                 } else if (state.mode === 'resize') {
                     if (state.resize.includes('e')) {
-                        next.box.width = clamp(state.editState.box.width + dxPercent, 8, 100 - state.editState.box.left);
+                        next.box.width = clamp(state.editState.box.width + dxPercent, state.minBoxSize, 100 - state.editState.box.left);
                     }
                     if (state.resize.includes('s')) {
-                        next.box.height = clamp(state.editState.box.height + dyPercent, 8, 100 - state.editState.box.top);
+                        next.box.height = clamp(state.editState.box.height + dyPercent, state.minBoxSize, 100 - state.editState.box.top);
                     }
                 } else if (state.mode === 'crop') {
                     const cropDeltaX = ((event.clientX - state.pointerX) / Math.max(1, state.editState.box.width / 100 * state.previewWidth)) * 100;
@@ -2577,7 +2627,8 @@
                 event.preventDefault();
             });
 
-            document.addEventListener('pointerup', () => {
+            document.addEventListener('pointerup', (event) => {
+                if (!state || event.pointerId !== state.pointerId) return;
                 if (state?.mode === 'crop-select') {
                     if (state.selection && state.selection.width >= 3 && state.selection.height >= 3) {
                         activeImageEdit.pendingCropSelection = state.selection;
@@ -2597,7 +2648,8 @@
                 state = null;
             });
 
-            document.addEventListener('pointercancel', () => {
+            document.addEventListener('pointercancel', (event) => {
+                if (!state || event.pointerId !== state.pointerId) return;
                 state = null;
             });
 
@@ -2773,6 +2825,9 @@
 
                 state = {
                     mode: isResize ? 'resize' : 'move',
+                    pointerId: event.pointerId,
+                    minWidth: event.pointerType === 'touch' ? 36 : 24,
+                    minHeight: event.pointerType === 'touch' ? 28 : 18,
                     pointerX: event.clientX,
                     pointerY: event.clientY,
                     previewWidth: rect.width,
@@ -2789,7 +2844,7 @@
             });
 
             document.addEventListener('pointermove', (event) => {
-                if (!state || layer.closest('.poster-preview')?.dataset.viewportGesture === 'pinch') return;
+                if (!state || event.pointerId !== state.pointerId || layer.closest('.poster-preview')?.dataset.viewportGesture === 'pinch') return;
                 const dx = event.clientX - state.pointerX;
                 const dy = event.clientY - state.pointerY;
 
@@ -2799,11 +2854,11 @@
                     layer.style.left = `${(nextLeft / state.previewWidth) * 100}%`;
                     layer.style.top = `${(nextTop / state.previewHeight) * 100}%`;
                 } else {
-                    let nextWidth = clamp(state.width + dx, 24, state.previewWidth - state.left);
-                    let nextHeight = clamp(state.height + dy, 18, state.previewHeight - state.top);
+                    let nextWidth = clamp(state.width + dx, state.minWidth, state.previewWidth - state.left);
+                    let nextHeight = clamp(state.height + dy, state.minHeight, state.previewHeight - state.top);
                     if (layer.dataset.fixedRatio === 'true') {
                         const ratio = Number(layer.dataset.aspectRatio) || (state.width / Math.max(1, state.height));
-                        nextHeight = clamp(nextWidth / ratio, 18, state.previewHeight - state.top);
+                        nextHeight = clamp(nextWidth / ratio, state.minHeight, state.previewHeight - state.top);
                     }
                     layer.style.width = `${(nextWidth / state.previewWidth) * 100}%`;
                     layer.style.height = `${(nextHeight / state.previewHeight) * 100}%`;
@@ -2813,11 +2868,13 @@
                 event.preventDefault();
             });
 
-            document.addEventListener('pointerup', () => {
+            document.addEventListener('pointerup', (event) => {
+                if (!state || event.pointerId !== state.pointerId) return;
                 state = null;
             });
 
-            document.addEventListener('pointercancel', () => {
+            document.addEventListener('pointercancel', (event) => {
+                if (!state || event.pointerId !== state.pointerId) return;
                 state = null;
             });
         }
@@ -3141,7 +3198,7 @@
             let suppressNextClick = false;
 
             function beginInteraction(event, mode) {
-                if (event.button !== 0) return;
+                if (event.pointerType === 'mouse' && event.button !== 0) return;
                 setActiveTimelineClip(clip);
                 const lane = clip.closest('.clip-lane');
                 const laneWidth = lane.getBoundingClientRect().width;
@@ -3150,32 +3207,34 @@
 
                 dragState = {
                     mode,
+                    pointerId: event.pointerId,
+                    pointerType: event.pointerType,
                     laneWidth,
                     pointerStartX: event.clientX,
                     start,
                     duration,
-                    active: mode !== 'move'
+                    active: mode !== 'move' || event.pointerType === 'touch'
                 };
 
                 if (dragState.active) {
                     clip.classList.add('dragging');
                     event.preventDefault();
                 }
+                clip.setPointerCapture?.(event.pointerId);
                 event.stopPropagation();
             }
 
-            clip.querySelector('.resize-left').addEventListener('mousedown', (event) => {
+            clip.querySelector('.resize-left').addEventListener('pointerdown', (event) => {
                 beginInteraction(event, 'resize-left');
             });
 
-            clip.querySelector('.resize-right').addEventListener('mousedown', (event) => {
+            clip.querySelector('.resize-right').addEventListener('pointerdown', (event) => {
                 beginInteraction(event, 'resize-right');
             });
 
-            clip.addEventListener('mousedown', (event) => {
+            clip.addEventListener('pointerdown', (event) => {
                 if (event.target.closest('.resize-handle')) return;
-                if (event.target.closest('.text-tools')) return;
-                if (event.target.matches('input[type="file"]')) return;
+                if (event.target.closest('.text-tools, input, select, button, label')) return;
                 beginInteraction(event, 'move');
             });
 
@@ -3186,11 +3245,12 @@
                 event.stopPropagation();
             }, true);
 
-            document.addEventListener('mousemove', (event) => {
-                if (!dragState) return;
+            document.addEventListener('pointermove', (event) => {
+                if (!dragState || event.pointerId !== dragState.pointerId) return;
 
                 const deltaPixels = event.clientX - dragState.pointerStartX;
-                if (!dragState.active && Math.abs(deltaPixels) < 4) return;
+                const activationThreshold = dragState.pointerType === 'touch' ? 1 : 4;
+                if (!dragState.active && Math.abs(deltaPixels) < activationThreshold) return;
 
                 if (!dragState.active) {
                     dragState.active = true;
@@ -3228,11 +3288,14 @@
                 renderClip(clip);
             });
 
-            document.addEventListener('mouseup', () => {
-                if (!dragState) return;
+            function endInteraction(event) {
+                if (!dragState || event.pointerId !== dragState.pointerId) return;
                 dragState = null;
                 clip.classList.remove('dragging');
-            });
+            }
+
+            document.addEventListener('pointerup', endInteraction);
+            document.addEventListener('pointercancel', endInteraction);
         }
 
         function setupMaterialRowSelection(row) {
@@ -3281,7 +3344,6 @@
 
         function exportStatusLabel(status) {
             const labels = {
-                recording: '產生預覽檔',
                 uploading: '上傳預覽檔',
                 creating_job: '建立轉檔工作',
                 queued: '排隊中',
@@ -3635,7 +3697,7 @@
             btn.disabled = true;
             btn.innerText = "輸出中...";
             exportJobs.clear();
-            upsertExportJob({ id: 'current-export', status: 'recording' });
+            renderExportJobs();
             try {
                 if (previewPlaybackId) stopTimelinePreview();
                 const webmBlob = await recordPreviewWebM();
