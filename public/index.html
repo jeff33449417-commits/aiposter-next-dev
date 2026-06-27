@@ -3477,17 +3477,24 @@
             return promise;
         }
 
-        function waitForVideoFrame(video, timeout = 80) {
-            if (!video || video.readyState >= 2) return Promise.resolve();
+        function waitForVideoFrame(video, timeout = 160) {
+            if (!video) return Promise.resolve();
             return new Promise((resolve) => {
+                let requestId = null;
                 const cleanup = () => {
                     clearTimeout(timer);
+                    if (requestId && video.cancelVideoFrameCallback) {
+                        video.cancelVideoFrameCallback(requestId);
+                    }
                     video.removeEventListener('seeked', cleanup);
                     video.removeEventListener('loadeddata', cleanup);
                     video.removeEventListener('timeupdate', cleanup);
                     resolve();
                 };
                 const timer = setTimeout(cleanup, timeout);
+                if (video.requestVideoFrameCallback) {
+                    requestId = video.requestVideoFrameCallback(cleanup);
+                }
                 video.addEventListener('seeked', cleanup, { once: true });
                 video.addEventListener('loadeddata', cleanup, { once: true });
                 video.addEventListener('timeupdate', cleanup, { once: true });
@@ -3502,13 +3509,13 @@
             const start = parseFloat(clip.dataset.start) || 0;
             const localTime = Math.max(0, elapsedSeconds - start);
             const targetTime = Math.min(video.duration - 0.04, localTime % video.duration);
-            if (Math.abs(video.currentTime - targetTime) > 0.18 || video.paused) {
+            try { await video.play(); } catch (error) {}
+            if (Math.abs(video.currentTime - targetTime) > 0.45 || video.paused) {
                 try {
                     video.currentTime = Math.max(0, targetTime);
                     await waitForVideoFrame(video);
                 } catch (error) {}
             }
-            try { await video.play(); } catch (error) {}
         }
 
         function percentBoxForLayer(layer, clip) {
@@ -3613,9 +3620,8 @@
 
         async function drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds) {
             const state = clip._posterVideoState || clip._editorVideoState || fullMediaState();
-            const video = clip._videoUrl
-                ? await loadExportVideo(clip._videoUrl)
-                : layer.querySelector('.preview-media-element');
+            const liveVideo = layer.querySelector('.preview-media-element');
+            const video = liveVideo || (clip._videoUrl ? await loadExportVideo(clip._videoUrl) : null);
             await syncExportVideoToTime(video, clip, elapsedSeconds);
             if (!video.videoWidth || !video.videoHeight) return;
             const crop = state.crop;
@@ -3629,6 +3635,28 @@
             clipPolygon(ctx, box, state.corners);
             ctx.drawImage(video, sx, sy, sw, sh, box.x, box.y, box.width, box.height);
             ctx.restore();
+        }
+
+        async function prepareExportVideos() {
+            const videoClips = Array.from(document.querySelectorAll('.timeline-clip')).filter((clip) => {
+                return clip._videoUrl || clip.querySelector('.upload-input')?.accept === 'video/*';
+            });
+
+            await Promise.all(videoClips.map(async (clip) => {
+                const layer = prepareClipPreviewLayer(clip);
+                const video = layer?.querySelector('.preview-media-element') || (clip._videoUrl ? await loadExportVideo(clip._videoUrl) : null);
+                if (!video) return;
+                video.muted = true;
+                video.playsInline = true;
+                video.loop = true;
+                if (Number.isFinite(video.duration) && video.duration > 0) {
+                    try {
+                        video.currentTime = 0;
+                        await waitForVideoFrame(video);
+                    } catch (error) {}
+                }
+                try { await video.play(); } catch (error) {}
+            }));
         }
 
         function drawTextClip(ctx, clip, layer, box, scaleY, effect) {
@@ -3703,6 +3731,7 @@
             };
 
             document.querySelectorAll('.timeline-clip').forEach(prepareClipPreviewLayer);
+            await prepareExportVideos();
             recorder.start(1000);
             const startTime = performance.now();
             const stopped = new Promise((resolve) => {
