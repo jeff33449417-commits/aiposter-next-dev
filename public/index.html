@@ -328,6 +328,7 @@
             gap: 12px;
             align-items: center;
             justify-content: flex-start;
+            flex-wrap: wrap;
             min-height: 54px;
             padding: 8px 12px;
             border: 2px solid rgba(29, 37, 84, 0.26);
@@ -1419,6 +1420,7 @@
         let activeTimelineClip = null;
         const EXPORT_FRAME_RATE = 60;
         const EXPORT_MAX_LONG_SIDE = 960;
+        const MAX_VIDEO_UPLOAD_BYTES = 10 * 1024 * 1024;
         const PREVIEW_EFFECT_CLASSES = [
             'effect-typewriter',
             'effect-fade-up',
@@ -1561,6 +1563,13 @@
             if (!label) return;
 
             if (file) {
+                if (input.accept === 'video/*' && file.size > MAX_VIDEO_UPLOAD_BYTES) {
+                    input.value = '';
+                    label.textContent = '上傳視頻';
+                    label.classList.remove('has-file');
+                    alert('影片上傳限制為 10MB，請先壓縮或縮短影片。');
+                    return;
+                }
                 label.textContent = file.name;
                 label.classList.add('has-file');
                 if (input.accept === 'image/*') {
@@ -3361,6 +3370,27 @@
             return message ? message.replace(/\s+/g, ' ').slice(0, 80) : '';
         }
 
+        function formatQueueEta(seconds) {
+            const value = Number(seconds || 0);
+            if (!Number.isFinite(value) || value <= 0) return '';
+            const minutes = Math.max(1, Math.ceil(value / 60));
+            return `約 ${minutes} 分鐘`;
+        }
+
+        function exportQueueMessage(job) {
+            const queue = job?.queue;
+            if (!queue || !['queued', 'processing', 'waiting_renderer'].includes(job?.status)) return '';
+            const position = Number(queue.position || 0);
+            const eta = formatQueueEta(queue.estimatedSeconds);
+            if (job.status === 'processing') {
+                return eta ? `正在轉檔，${eta}` : '正在轉檔';
+            }
+            if (position > 0) {
+                return `排隊第 ${position} 位${eta ? `，${eta}` : ''}`;
+            }
+            return eta ? `排隊中，${eta}` : '排隊中';
+        }
+
         function jobSourceAssetUrl(job) {
             return job?.sourceAssetUrl || job?.input?.settings?.sourceAssetUrl || '';
         }
@@ -3382,6 +3412,7 @@
             panel.innerHTML = jobs.map((job) => `
                 <article class="export-job">
                     <span class="export-status ${escapeText(job.status)}">${escapeText(exportStatusLabel(job.status))}</span>
+                    ${exportQueueMessage(job) ? `<span class="export-job-meta">${escapeText(exportQueueMessage(job))}</span>` : ''}
                     ${exportJobMessage(job) ? `<span class="export-job-meta">${escapeText(exportJobMessage(job))}</span>` : ''}
                     ${jobOutputUrl(job) ? `<a class="export-link" href="${escapeText(jobOutputUrl(job))}" target="_blank" rel="noopener" download="${escapeText(jobOutputFilename(job))}">下載 H.265 MP4</a>` : ''}
                     ${jobOutputUrl(job) ? `<span class="download-hint">手機下載後請看 Safari 下載項目，或「檔案」App 的下載項目。</span>` : ''}
@@ -3730,7 +3761,7 @@
             const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
                 ? 'video/webm;codecs=vp9'
                 : 'video/webm';
-            const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 4000000 });
+            const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2000000 });
             recorder.ondataavailable = (event) => {
                 if (event.data.size) chunks.push(event.data);
             };
@@ -3803,13 +3834,25 @@
                 });
                 const data = await parseApiJson(response);
                 if (!response.ok || !data.ok) {
+                    if (data.job) {
+                        upsertExportJob(data.job);
+                        pollExportJob(data.job.id);
+                        return;
+                    }
+                    if (data.queue) {
+                        upsertExportJob({
+                            id: 'current-export',
+                            status: 'failed',
+                            message: `${data.message || '目前 MP4 佇列已滿'} ${formatQueueEta(data.queue.estimatedSeconds)}`
+                        });
+                        return;
+                    }
                     throw new Error(data.message || data.code || "後端連線異常");
                 }
                 upsertExportJob(data.job);
                 pollExportJob(data.job.id);
             } catch (error) {
                 upsertExportJob({ id: 'current-export', status: 'failed', errorMessage: error.message || '雲端輸出服務尚未啟用，請稍後再試。' });
-                alert(`安排失敗！${error.message || '雲端輸出服務尚未啟用，請稍後再試。'}`);
             } finally {
                 btn.disabled = false;
                 btn.innerText = "安排";

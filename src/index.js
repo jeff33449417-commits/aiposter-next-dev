@@ -2,6 +2,15 @@ const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
 };
+const ACTIVE_EXPORT_STATUSES = ["queued", "processing", "waiting_renderer"];
+const DEFAULT_EXPORT_BACKLOG_LIMIT = 50;
+const DEFAULT_EXPORT_SECONDS_PER_JOB = 120;
+const DEFAULT_VIDEO_UPLOAD_MB = 10;
+
+function envNumber(env, name, fallback) {
+  const value = Number(env?.[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
 
 function json(data, init = {}) {
   return Response.json(data, {
@@ -48,6 +57,14 @@ function serializeJob(row) {
     outputUrl: outputUrlForJob(row),
     outputFilename: row?.output_r2_key ? `${row.id}_h265.mp4` : null
   };
+}
+
+function serializeJobWithQueue(row, queueInfo = null) {
+  const job = serializeJob(row);
+  if (queueInfo) {
+    job.queue = queueInfo;
+  }
+  return job;
 }
 
 function normalizeEmail(email) {
@@ -292,6 +309,81 @@ async function userOwnsProject(env, user, projectId) {
   return Boolean(project);
 }
 
+function activeStatusPlaceholders() {
+  return ACTIVE_EXPORT_STATUSES.map(() => "?").join(", ");
+}
+
+async function cleanupStaleExportJobs(env) {
+  const timeoutMinutes = envNumber(env, "EXPORT_JOB_TIMEOUT_MINUTES", 45);
+  await env.DB.prepare(
+    `UPDATE jobs
+     SET status = 'failed',
+         error_message = 'Timed out while waiting for MP4 export. Please submit a new export.',
+         updated_at = datetime('now')
+     WHERE type = 'export_h265'
+       AND status IN (${activeStatusPlaceholders()})
+       AND datetime(updated_at) < datetime('now', ?)`
+  ).bind(...ACTIVE_EXPORT_STATUSES, `-${timeoutMinutes} minutes`).run();
+}
+
+async function getActiveExportForUser(env, userId) {
+  return env.DB.prepare(
+    `SELECT id, project_id, type, status, input_json, output_r2_key, error_message, created_at, updated_at
+     FROM jobs
+     WHERE owner_user_id = ?
+       AND type = 'export_h265'
+       AND status IN (${activeStatusPlaceholders()})
+     ORDER BY created_at DESC
+     LIMIT 1`
+  ).bind(userId, ...ACTIVE_EXPORT_STATUSES).first();
+}
+
+async function countActiveExports(env) {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
+     FROM jobs
+     WHERE type = 'export_h265'
+       AND status IN (${activeStatusPlaceholders()})`
+  ).bind(...ACTIVE_EXPORT_STATUSES).first();
+  return Number(row?.count || 0);
+}
+
+async function countDailyExports(env, userId) {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
+     FROM jobs
+     WHERE owner_user_id = ?
+       AND type = 'export_h265'
+       AND date(created_at) = date('now')`
+  ).bind(userId).first();
+  return Number(row?.count || 0);
+}
+
+async function exportQueueInfo(env, job) {
+  if (!job || !ACTIVE_EXPORT_STATUSES.includes(job.status)) {
+    return null;
+  }
+
+  const ahead = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
+     FROM jobs
+     WHERE type = 'export_h265'
+       AND status IN (${activeStatusPlaceholders()})
+       AND datetime(created_at) < datetime(?)`
+  ).bind(...ACTIVE_EXPORT_STATUSES, job.created_at).first();
+  const aheadCount = Number(ahead?.count || 0);
+  const secondsPerJob = envNumber(env, "EXPORT_SECONDS_PER_JOB", DEFAULT_EXPORT_SECONDS_PER_JOB);
+  return {
+    position: aheadCount + 1,
+    ahead: aheadCount,
+    estimatedSeconds: Math.max(secondsPerJob, (aheadCount + 1) * secondsPerJob)
+  };
+}
+
+async function serializeJobForResponse(env, row) {
+  return serializeJobWithQueue(row, await exportQueueInfo(env, row));
+}
+
 async function handleJobs(request, env, user) {
   const unauthorized = requireUser(user);
   if (unauthorized) {
@@ -306,6 +398,7 @@ async function handleJobs(request, env, user) {
     }, { status: 405, headers: { allow: "GET" } });
   }
 
+  await cleanupStaleExportJobs(env);
   const rows = await env.DB.prepare(
     `SELECT id, project_id, type, status, input_json, output_r2_key, error_message, created_at, updated_at
      FROM jobs
@@ -316,7 +409,7 @@ async function handleJobs(request, env, user) {
 
   return json({
     ok: true,
-    jobs: (rows.results || []).map(serializeJob)
+    jobs: await Promise.all((rows.results || []).map((row) => serializeJobForResponse(env, row)))
   });
 }
 
@@ -334,6 +427,7 @@ async function handleJobById(request, env, user, jobId) {
     }, { status: 405, headers: { allow: "GET" } });
   }
 
+  await cleanupStaleExportJobs(env);
   const job = await env.DB.prepare(
     `SELECT id, project_id, type, status, input_json, output_r2_key, error_message, created_at, updated_at
      FROM jobs
@@ -350,7 +444,7 @@ async function handleJobById(request, env, user, jobId) {
 
   return json({
     ok: true,
-    job: serializeJob(job)
+    job: await serializeJobForResponse(env, job)
   });
 }
 
@@ -377,6 +471,42 @@ async function handleExportJob(request, env, user, ctx) {
     }, { status: 403 });
   }
 
+  await cleanupStaleExportJobs(env);
+  const dailyExportCount = await countDailyExports(env, user.id);
+  if (dailyExportCount >= Number(featurePayload.limits.exports_per_day || 0)) {
+    return json({
+      ok: false,
+      code: "EXPORT_DAILY_LIMIT_REACHED",
+      message: `今天的 MP4 輸出配額已用完，請明天再試。`
+    }, { status: 429 });
+  }
+
+  const activeUserJob = await getActiveExportForUser(env, user.id);
+  if (activeUserJob) {
+    return json({
+      ok: false,
+      code: "ACTIVE_EXPORT_EXISTS",
+      message: "你已經有一個 MP4 任務正在處理，請等它完成後再送出新的安排。",
+      job: await serializeJobForResponse(env, activeUserJob)
+    }, { status: 409 });
+  }
+
+  const activeExportCount = await countActiveExports(env);
+  const backlogLimit = envNumber(env, "EXPORT_BACKLOG_LIMIT", DEFAULT_EXPORT_BACKLOG_LIMIT);
+  if (activeExportCount >= backlogLimit) {
+    const secondsPerJob = envNumber(env, "EXPORT_SECONDS_PER_JOB", DEFAULT_EXPORT_SECONDS_PER_JOB);
+    return json({
+      ok: false,
+      code: "EXPORT_QUEUE_FULL",
+      message: `目前 MP4 佇列已滿，請稍後再送出。`,
+      queue: {
+        active: activeExportCount,
+        limit: backlogLimit,
+        estimatedSeconds: activeExportCount * secondsPerJob
+      }
+    }, { status: 429 });
+  }
+
   const body = await readJson(request);
   if (!body || typeof body !== "object") {
     return json({
@@ -397,7 +527,7 @@ async function handleExportJob(request, env, user, ctx) {
   const sourceAssetId = body.settings?.sourceAssetId;
   if (sourceAssetId) {
     const sourceAsset = await env.DB.prepare(
-      `SELECT id FROM assets
+      `SELECT id, mime_type, size_bytes FROM assets
        WHERE id = ? AND owner_user_id = ? AND deleted_at IS NULL`
     ).bind(sourceAssetId, user.id).first();
 
@@ -407,6 +537,15 @@ async function handleExportJob(request, env, user, ctx) {
         code: "SOURCE_ASSET_NOT_FOUND",
         message: "The source asset was not found for this user."
       }, { status: 404 });
+    }
+
+    const maxVideoBytes = envNumber(env, "MAX_VIDEO_UPLOAD_MB", DEFAULT_VIDEO_UPLOAD_MB) * 1024 * 1024;
+    if ((sourceAsset.mime_type || "").startsWith("video/") && Number(sourceAsset.size_bytes || 0) > maxVideoBytes) {
+      return json({
+        ok: false,
+        code: "EXPORT_SOURCE_TOO_LARGE",
+        message: `MP4 輸出素材超過 ${envNumber(env, "MAX_VIDEO_UPLOAD_MB", DEFAULT_VIDEO_UPLOAD_MB)}MB，請先壓縮或縮短影片。`
+      }, { status: 413 });
     }
   }
 
@@ -423,21 +562,24 @@ async function handleExportJob(request, env, user, ctx) {
     requestedAt: new Date().toISOString()
   };
 
-  await env.DB.prepare(
-    `UPDATE jobs
-     SET status = 'failed',
-         error_message = 'Superseded by a newer MP4 export request.',
-         updated_at = datetime('now')
-     WHERE owner_user_id = ?
-       AND type = 'export_h265'
-       AND status IN ('queued', 'processing')`
-  ).bind(user.id).run();
-
-  await env.DB.prepare(
-    `INSERT INTO jobs
-      (id, owner_user_id, project_id, type, status, input_json, error_message, created_at, updated_at)
-     VALUES (?, ?, ?, 'export_h265', ?, ?, ?, datetime('now'), datetime('now'))`
-  ).bind(jobId, user.id, input.projectId, initialStatus, JSON.stringify(input), initialError).run();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO jobs
+        (id, owner_user_id, project_id, type, status, input_json, error_message, created_at, updated_at)
+       VALUES (?, ?, ?, 'export_h265', ?, ?, ?, datetime('now'), datetime('now'))`
+    ).bind(jobId, user.id, input.projectId, initialStatus, JSON.stringify(input), initialError).run();
+  } catch (error) {
+    const existingJob = await getActiveExportForUser(env, user.id);
+    if (existingJob) {
+      return json({
+        ok: false,
+        code: "ACTIVE_EXPORT_EXISTS",
+        message: "你已經有一個 MP4 任務正在處理，請等它完成後再送出新的安排。",
+        job: await serializeJobForResponse(env, existingJob)
+      }, { status: 409 });
+    }
+    throw error;
+  }
 
   if (rendererUrl) {
     if (env.JOBS_QUEUE) {
@@ -458,7 +600,14 @@ async function handleExportJob(request, env, user, ctx) {
       id: jobId,
       status: initialStatus,
       message: initialError,
-      sourceAssetUrl: input.settings?.sourceAssetUrl || null
+      sourceAssetUrl: input.settings?.sourceAssetUrl || null,
+      queue: rendererUrl
+        ? {
+            position: activeExportCount + 1,
+            ahead: activeExportCount,
+            estimatedSeconds: (activeExportCount + 1) * envNumber(env, "EXPORT_SECONDS_PER_JOB", DEFAULT_EXPORT_SECONDS_PER_JOB)
+          }
+        : null
     }
   }, { status: 202 });
 }
@@ -471,8 +620,8 @@ async function markJob(env, jobId, status, errorMessage = null, outputR2Key = nu
          output_r2_key = COALESCE(?, output_r2_key),
          updated_at = datetime('now')
      WHERE id = ?
-       AND status IN ('queued', 'processing')`
-  ).bind(status, errorMessage, outputR2Key, jobId).run();
+       AND status IN (${activeStatusPlaceholders()})`
+  ).bind(status, errorMessage, outputR2Key, jobId, ...ACTIVE_EXPORT_STATUSES).run();
 }
 
 function buildExportOutputKey(job) {
@@ -708,6 +857,15 @@ async function handleAssets(request, env, user) {
         ok: false,
         code: "UPLOAD_TOO_LARGE",
         message: `Upload exceeds the ${featurePayload.limits.max_upload_mb} MB plan limit.`
+      }, { status: 413 });
+    }
+
+    const maxVideoBytes = envNumber(env, "MAX_VIDEO_UPLOAD_MB", DEFAULT_VIDEO_UPLOAD_MB) * 1024 * 1024;
+    if ((file.type || "").startsWith("video/") && file.size > maxVideoBytes) {
+      return json({
+        ok: false,
+        code: "VIDEO_UPLOAD_TOO_LARGE",
+        message: `影片上傳限制為 ${envNumber(env, "MAX_VIDEO_UPLOAD_MB", DEFAULT_VIDEO_UPLOAD_MB)}MB，請先壓縮或縮短影片。`
       }, { status: 413 });
     }
 
@@ -1388,7 +1546,7 @@ function html(content, init = {}) {
 
 export default {
   async queue(batch, env) {
-    for (const message of batch.messages) {
+    await Promise.all(batch.messages.map(async (message) => {
       try {
         await processExportQueueMessage(message, env);
         message.ack();
@@ -1399,7 +1557,7 @@ export default {
         }
         message.ack();
       }
-    }
+    }));
   },
 
   async fetch(request, env, ctx) {

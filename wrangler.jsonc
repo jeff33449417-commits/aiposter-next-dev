@@ -41,7 +41,7 @@
     "consumers": [
       {
         "queue": "aiposter-jobs",
-        "max_batch_size": 1,
+        "max_batch_size": 5,
         "max_batch_timeout": 5,
         "max_retries": 1
       }
@@ -60,6 +60,10 @@
   ],
   "vars": {
     "APP_ENV": "production",
-    "OWNER_EMAIL": "Jeff33449417@gmail.com"
+    "OWNER_EMAIL": "Jeff33449417@gmail.com",
+    "EXPORT_BACKLOG_LIMIT": "50",
+    "EXPORT_SECONDS_PER_JOB": "120",
+    "EXPORT_JOB_TIMEOUT_MINUTES": "45",
+    "MAX_VIDEO_UPLOAD_MB": "10"
   }
 }
