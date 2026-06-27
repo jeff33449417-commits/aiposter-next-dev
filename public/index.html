@@ -3316,6 +3316,18 @@
             ctx.clip();
         }
 
+        function fullMediaState() {
+            return {
+                crop: { left: 0, top: 0, right: 0, bottom: 0 },
+                corners: {
+                    tl: { x: 0, y: 0 },
+                    tr: { x: 100, y: 0 },
+                    br: { x: 100, y: 100 },
+                    bl: { x: 0, y: 100 }
+                }
+            };
+        }
+
         async function drawImageClip(ctx, clip, layer, box, effect) {
             const state = clip._posterImageState || clip._imageEditState;
             if (!state || !clip._imageUrl) return;
@@ -3334,9 +3346,10 @@
         }
 
         async function drawVideoClip(ctx, clip, layer, box, effect) {
-            const state = clip._posterVideoState || clip._editorVideoState;
-            if (!state || !clip._videoUrl) return;
-            const video = await loadExportVideo(clip._videoUrl);
+            const state = clip._posterVideoState || clip._editorVideoState || fullMediaState();
+            const video = clip._videoUrl
+                ? await loadExportVideo(clip._videoUrl)
+                : layer.querySelector('.preview-media-element');
             if (!video.videoWidth || !video.videoHeight) return;
             const crop = state.crop;
             const sx = video.videoWidth * crop.left / 100;
@@ -3400,7 +3413,7 @@
                     drawTextClip(ctx, clip, layer, box, scaleY, effect);
                 } else if (clip._imageUrl) {
                     await drawImageClip(ctx, clip, layer, box, effect);
-                } else if (clip._videoUrl) {
+                } else if (clip._videoUrl || layer.querySelector('.preview-media-element')) {
                     await drawVideoClip(ctx, clip, layer, box, effect);
                 }
             }
