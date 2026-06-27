@@ -3,7 +3,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = process.cwd();
-const jsRoots = ["src", "renderer", "scripts", "tests"];
+// Include public/js so the extracted frontend modules are syntax-checked too.
+const jsRoots = ["src", "renderer", "scripts", "tests", "public/js"];
 const jsFiles = [];
 
 function collectJsFiles(dir) {
@@ -39,14 +40,37 @@ for (const file of jsFiles) {
 }
 
 const html = readFileSync(join(root, "public/index.html"), "utf8");
-for (const [index, match] of [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].entries()) {
-  try {
-    new Function(match[1]);
-    console.log(`html script ${index + 1}: syntax ok`);
-  } catch (error) {
+
+// Frontend modularization invariants: the CSS/JS live in their own files and
+// index.html only references them (no inline <style>/<script> blocks remain).
+const moduleRefs = [
+  ['<link rel="stylesheet" href="/styles.css">', "stylesheet link"],
+  ['src="/js/products.js"', "products.js script tag"],
+  ['src="/js/app.js"', "app.js script tag"]
+];
+for (const [needle, label] of moduleRefs) {
+  if (html.includes(needle)) {
+    console.log(`structure ok: ${label}`);
+  } else {
     failed = true;
-    console.error(`html script ${index + 1}: ${error.message}`);
+    console.error(`missing required structure: ${label}`);
   }
+}
+
+if (/<style[\s>]/i.test(html)) {
+  failed = true;
+  console.error("index.html still contains an inline <style> block");
+} else {
+  console.log("structure ok: no inline <style> block");
+}
+
+// Any remaining <script> must be an external (src) reference — no inline code.
+const inlineScript = /<script(?![^>]*\bsrc=)[^>]*>/i.test(html);
+if (inlineScript) {
+  failed = true;
+  console.error("index.html still contains an inline (src-less) <script> block");
+} else {
+  console.log("structure ok: no inline <script> block");
 }
 
 const requiredSnippets = [
@@ -59,8 +83,11 @@ const requiredSnippets = [
   ["one active export D1 index", "idx_jobs_one_active_export_per_user"]
 ];
 
+// Frontend constants now live in public/js/app.js after modularization, so
+// scan it alongside the worker, the markup and the migration.
 const combined = [
   html,
+  readFileSync(join(root, "public/js/app.js"), "utf8"),
   readFileSync(join(root, "src/index.js"), "utf8"),
   readFileSync(join(root, "migrations/0003_export_queue_limits.sql"), "utf8")
 ].join("\n");

@@ -5,13 +5,15 @@ import test from "node:test";
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("frontend keeps the current MP4 export contract", () => {
-  const html = read("public/index.html");
-  assert.match(html, /const TOTAL_SECONDS = 15;/);
-  assert.match(html, /const EXPORT_FRAME_RATE = 60;/);
-  assert.match(html, /const EXPORT_MAX_LONG_SIDE = 960;/);
-  assert.match(html, /async function downloadJobOutput/);
-  assert.match(html, /new Blob\(\[blob\], \{ type: 'video\/mp4' \}\)/);
-  assert.match(html, /下載 H\.265 MP4/);
+  // After modularization these constants/functions live in public/js/app.js
+  // (index.html now only references the external scripts).
+  const app = read("public/js/app.js");
+  assert.match(app, /const TOTAL_SECONDS = 15;/);
+  assert.match(app, /const EXPORT_FRAME_RATE = 60;/);
+  assert.match(app, /const EXPORT_MAX_LONG_SIDE = 960;/);
+  assert.match(app, /async function downloadJobOutput/);
+  assert.match(app, /new Blob\(\[blob\], \{ type: 'video\/mp4' \}\)/);
+  assert.match(app, /下載 H\.265 MP4/);
 });
 
 test("backend enforces MP4 queue safeguards", () => {
