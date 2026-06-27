@@ -44,7 +44,7 @@ function runFfmpeg(inputPath, outputPath, frameRate) {
     "-pix_fmt",
     "yuv420p",
     "-preset",
-    process.env.X265_PRESET || "medium",
+    process.env.X265_PRESET || "veryfast",
     "-crf",
     process.env.X265_CRF || "28",
     "-movflags",

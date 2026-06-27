@@ -1417,6 +1417,7 @@
         let previewPlaybackStart = 0;
         let activeImageEdit = null;
         let activeTimelineClip = null;
+        const EXPORT_FRAME_RATE = 30;
         const PREVIEW_EFFECT_CLASSES = [
             'effect-typewriter',
             'effect-fade-up',
@@ -3718,18 +3719,18 @@
             }
         }
 
-        async function recordPreviewWebM() {
+        async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
             const canvas = document.createElement('canvas');
             const canvasSize = exportCanvasSize();
             canvas.width = canvasSize.width;
             canvas.height = canvasSize.height;
             const ctx = canvas.getContext('2d');
-            const stream = canvas.captureStream(60);
+            const stream = canvas.captureStream(frameRate);
             const chunks = [];
             const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
                 ? 'video/webm;codecs=vp9'
                 : 'video/webm';
-            const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 6000000 });
+            const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 4000000 });
             recorder.ondataavailable = (event) => {
                 if (event.data.size) chunks.push(event.data);
             };
@@ -3769,11 +3770,12 @@
             renderExportJobs();
             try {
                 if (previewPlaybackId) stopTimelinePreview();
-                const webmBlob = await recordPreviewWebM();
+                const product = selectedProduct();
+                const outputFrameRate = EXPORT_FRAME_RATE;
+                const webmBlob = await recordPreviewWebM(outputFrameRate);
                 upsertExportJob({ id: 'current-export', status: 'uploading' });
                 const sourceAsset = await uploadAssetToCloud(webmBlob, 'ai_poster_preview.webm');
                 upsertExportJob({ id: 'current-export', status: 'creating_job' });
-                const product = selectedProduct();
                 const canvasSize = exportCanvasSize(product);
                 const response = await fetch('/api/jobs/export', {
                     method: 'POST',
@@ -3795,7 +3797,7 @@
                             exportWidth: canvasSize.width,
                             exportHeight: canvasSize.height,
                             durationSeconds: TOTAL_SECONDS,
-                            frameRate: 60
+                            frameRate: outputFrameRate
                         }
                     })
                 });

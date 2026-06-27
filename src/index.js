@@ -424,6 +424,16 @@ async function handleExportJob(request, env, user, ctx) {
   };
 
   await env.DB.prepare(
+    `UPDATE jobs
+     SET status = 'failed',
+         error_message = 'Superseded by a newer MP4 export request.',
+         updated_at = datetime('now')
+     WHERE owner_user_id = ?
+       AND type = 'export_h265'
+       AND status IN ('queued', 'processing')`
+  ).bind(user.id).run();
+
+  await env.DB.prepare(
     `INSERT INTO jobs
       (id, owner_user_id, project_id, type, status, input_json, error_message, created_at, updated_at)
      VALUES (?, ?, ?, 'export_h265', ?, ?, ?, datetime('now'), datetime('now'))`
@@ -460,7 +470,8 @@ async function markJob(env, jobId, status, errorMessage = null, outputR2Key = nu
          error_message = ?,
          output_r2_key = COALESCE(?, output_r2_key),
          updated_at = datetime('now')
-     WHERE id = ?`
+     WHERE id = ?
+       AND status IN ('queued', 'processing')`
   ).bind(status, errorMessage, outputR2Key, jobId).run();
 }
 
