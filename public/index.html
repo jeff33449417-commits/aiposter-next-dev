@@ -365,11 +365,15 @@
         .export-status.failed { color: var(--danger); }
 
         .export-link {
+            border: 0;
+            background: transparent;
             color: var(--accent);
             font-size: 12px;
             font-weight: 800;
             text-decoration: underline;
             white-space: nowrap;
+            cursor: pointer;
+            padding: 0;
         }
 
         .download-hint {
@@ -3400,6 +3404,26 @@
             return job?.outputFilename || `${job?.id || 'ai_poster'}_h265.mp4`;
         }
 
+        async function downloadJobOutput(jobId) {
+            const job = exportJobs.get(jobId);
+            const outputUrl = jobOutputUrl(job);
+            if (!outputUrl) return;
+            try {
+                const response = await fetch(outputUrl, { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error('MP4 檔案還不能下載，請稍後再試。');
+                }
+                const blob = await response.blob();
+                const mp4Blob = blob.type === 'video/mp4' ? blob : new Blob([blob], { type: 'video/mp4' });
+                downloadBlob(mp4Blob, jobOutputFilename(job).replace(/\.html$/i, '').replace(/\.mp4$/i, '') + '.mp4');
+            } catch (error) {
+                upsertExportJob({
+                    ...job,
+                    errorMessage: error.message || '下載失敗，請稍後再試。'
+                });
+            }
+        }
+
         function renderExportJobs() {
             const panel = document.getElementById('exportJobsPanel');
             if (!panel) return;
@@ -3411,7 +3435,7 @@
                     <span class="export-status ${escapeText(job.status)}">${escapeText(exportStatusLabel(job.status))}</span>
                     ${exportQueueMessage(job) ? `<span class="export-job-meta">${escapeText(exportQueueMessage(job))}</span>` : ''}
                     ${exportJobMessage(job) ? `<span class="export-job-meta">${escapeText(exportJobMessage(job))}</span>` : ''}
-                    ${jobOutputUrl(job) ? `<a class="export-link" href="${escapeText(jobOutputUrl(job))}" target="_blank" rel="noopener" download="${escapeText(jobOutputFilename(job))}">下載 H.265 MP4</a>` : ''}
+                    ${jobOutputUrl(job) ? `<button class="export-link" type="button" onclick="downloadJobOutput('${escapeText(job.id)}')">下載 H.265 MP4</button>` : ''}
                     ${jobOutputUrl(job) ? `<span class="download-hint">手機下載後請看 Safari 下載項目，或「檔案」App 的下載項目。</span>` : ''}
                 </article>
             `).join('');

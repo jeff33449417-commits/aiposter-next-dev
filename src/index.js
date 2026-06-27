@@ -994,10 +994,12 @@ async function handleJobOutput(request, env, user, jobId) {
     }, { status: 404 });
   }
 
+  const filename = `${job.id}_h265.mp4`;
   return new Response(object.body, {
     headers: {
-      "content-type": object.httpMetadata?.contentType || "video/mp4",
-      "content-disposition": `attachment; filename="${job.id}_h265.mp4"`,
+      "content-type": "video/mp4",
+      "content-disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      "x-content-type-options": "nosniff",
       "cache-control": "private, max-age=300",
       "etag": object.httpEtag
     }
