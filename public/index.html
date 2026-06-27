@@ -99,6 +99,9 @@
             font-weight: 700;
             letter-spacing: 0;
             overflow: hidden;
+            transform: translate(var(--preview-pan-x, 0px), var(--preview-pan-y, 0px)) scale(var(--preview-zoom, 1));
+            transform-origin: center center;
+            touch-action: none;
         }
 
         .preview-placeholder {
@@ -364,6 +367,14 @@
             font-weight: 800;
             text-decoration: underline;
             white-space: nowrap;
+        }
+
+        .download-hint {
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 700;
+            max-width: 210px;
+            line-height: 1.25;
         }
 
         .action-btn {
@@ -933,6 +944,7 @@
             justify-content: center;
             gap: 14px;
             padding-top: 6px;
+            flex-wrap: wrap;
         }
 
         .editor-action-btn {
@@ -976,10 +988,25 @@
             .preview-frame {
                 min-height: 118px;
                 border-width: 2px;
+                padding: 0 14px;
             }
 
             .poster-preview {
                 width: min(860px, calc(100vw - 42px));
+            }
+
+            .image-editor-screen {
+                padding: 18px 0 30px;
+            }
+
+            .editor-preview-frame {
+                min-height: 58vh;
+                padding: 0 14px;
+            }
+
+            .image-editor-screen .poster-preview {
+                width: var(--editor-preview-width, min(1360px, calc(100vw - 28px)));
+                height: var(--editor-preview-height, min(58vh, 540px));
             }
 
             .timeline-ruler {
@@ -1071,6 +1098,18 @@
 
             .image-editor-tools {
                 grid-template-columns: 1fr;
+            }
+
+            .editor-actions {
+                width: min(100vw - 24px, 520px);
+                margin: 0 auto;
+                gap: 10px;
+            }
+
+            .editor-action-btn {
+                min-width: min(30vw, 132px);
+                padding: 8px 16px;
+                font-size: 20px;
             }
 
             .tool-row {
@@ -1463,6 +1502,8 @@
             if (!PRODUCT_BY_ID.has(productId)) return;
             selectedProductId = productId;
             applyScreenPreviewSize();
+            resetViewportZoom(document.getElementById('posterPreview'));
+            resetViewportZoom(document.getElementById('imageEditorPreview'));
         }
 
         function showFileName(input, labelId) {
@@ -1626,6 +1667,119 @@
 
         function clamp(value, min, max) {
             return Math.max(min, Math.min(max, value));
+        }
+
+        const viewportGestureStates = new WeakMap();
+
+        function applyViewportTransform(target, state) {
+            target.style.setProperty('--preview-zoom', state.scale.toFixed(3));
+            target.style.setProperty('--preview-pan-x', `${state.x.toFixed(1)}px`);
+            target.style.setProperty('--preview-pan-y', `${state.y.toFixed(1)}px`);
+        }
+
+        function resetViewportZoom(target) {
+            const state = viewportGestureStates.get(target);
+            if (!state) return;
+            state.scale = 1;
+            state.x = 0;
+            state.y = 0;
+            state.pointers.clear();
+            state.gesture = null;
+            applyViewportTransform(target, state);
+        }
+
+        function setupViewportGestures(target) {
+            if (!target || viewportGestureStates.has(target)) return;
+            const state = {
+                scale: 1,
+                x: 0,
+                y: 0,
+                pointers: new Map(),
+                gesture: null
+            };
+            viewportGestureStates.set(target, state);
+            applyViewportTransform(target, state);
+
+            const pointDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+            const pointCenter = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+            const editableLayerSelector = '.preview-text-layer, .editor-image-layer, .editor-crop-selection, .editor-crop-handle, .corner-handle, .resize-handle';
+
+            target.addEventListener('pointerdown', (event) => {
+                state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+                if (state.pointers.size === 2) {
+                    const [first, second] = Array.from(state.pointers.values());
+                    target.dataset.viewportGesture = 'pinch';
+                    state.gesture = {
+                        mode: 'pinch',
+                        distance: pointDistance(first, second),
+                        center: pointCenter(first, second),
+                        scale: state.scale,
+                        x: state.x,
+                        y: state.y
+                    };
+                    event.preventDefault();
+                    return;
+                }
+
+                if (state.pointers.size === 1 && state.scale > 1 && !event.target.closest(editableLayerSelector)) {
+                    target.dataset.viewportGesture = 'pan';
+                    state.gesture = {
+                        mode: 'pan',
+                        pointerId: event.pointerId,
+                        x: state.x,
+                        y: state.y,
+                        pointerX: event.clientX,
+                        pointerY: event.clientY
+                    };
+                    event.preventDefault();
+                }
+            }, { capture: true });
+
+            target.addEventListener('pointermove', (event) => {
+                if (!state.pointers.has(event.pointerId)) return;
+                state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+                if (state.gesture?.mode === 'pinch' && state.pointers.size >= 2) {
+                    const [first, second] = Array.from(state.pointers.values());
+                    const center = pointCenter(first, second);
+                    const nextScale = clamp(state.gesture.scale * (pointDistance(first, second) / Math.max(1, state.gesture.distance)), 1, 5);
+                    state.scale = nextScale;
+                    state.x = state.gesture.x + (center.x - state.gesture.center.x);
+                    state.y = state.gesture.y + (center.y - state.gesture.center.y);
+                    applyViewportTransform(target, state);
+                    event.preventDefault();
+                } else if (state.gesture?.mode === 'pan' && state.gesture.pointerId === event.pointerId) {
+                    state.x = state.gesture.x + event.clientX - state.gesture.pointerX;
+                    state.y = state.gesture.y + event.clientY - state.gesture.pointerY;
+                    applyViewportTransform(target, state);
+                    event.preventDefault();
+                }
+            }, { capture: true });
+
+            const endPointer = (event) => {
+                state.pointers.delete(event.pointerId);
+                if (state.pointers.size < 2 && state.gesture?.mode === 'pinch') {
+                    state.gesture = null;
+                    target.dataset.viewportGesture = '';
+                }
+                if (state.gesture?.pointerId === event.pointerId) {
+                    state.gesture = null;
+                    target.dataset.viewportGesture = '';
+                }
+            };
+
+            target.addEventListener('pointerup', endPointer, { capture: true });
+            target.addEventListener('pointercancel', endPointer, { capture: true });
+            target.addEventListener('dblclick', () => {
+                if (state.scale > 1) {
+                    resetViewportZoom(target);
+                } else {
+                    state.scale = 2;
+                    state.x = 0;
+                    state.y = 0;
+                    applyViewportTransform(target, state);
+                }
+            });
         }
 
         function readFileAsDataUrl(file) {
@@ -2052,6 +2206,7 @@
             syncEditorControlsFromState(savedState);
             document.getElementById('mediaEditorTitle').textContent = '圖片編輯';
             document.body.classList.add('image-editing');
+            resetViewportZoom(document.getElementById('imageEditorPreview'));
             resetCutButton();
             resetFinishEditButton();
             renderImageEditor();
@@ -2085,6 +2240,7 @@
             syncEditorControlsFromState(savedState);
             document.getElementById('mediaEditorTitle').textContent = '視頻編輯';
             document.body.classList.add('image-editing');
+            resetViewportZoom(document.getElementById('imageEditorPreview'));
             resetCutButton();
             resetFinishEditButton();
             renderImageEditor();
@@ -2311,8 +2467,9 @@
 
             let state = null;
 
-            layer.addEventListener('mousedown', (event) => {
+            layer.addEventListener('pointerdown', (event) => {
                 if (!activeImageEdit) return;
+                if (preview.dataset.viewportGesture === 'pinch') return;
                 const previewRect = preview.getBoundingClientRect();
                 const layerRect = layer.getBoundingClientRect();
                 const screen = document.getElementById('imageEditorScreen');
@@ -2353,12 +2510,13 @@
                     editState
                 };
 
+                layer.setPointerCapture?.(event.pointerId);
                 event.preventDefault();
                 event.stopPropagation();
             });
 
-            document.addEventListener('mousemove', (event) => {
-                if (!state || !activeImageEdit) return;
+            document.addEventListener('pointermove', (event) => {
+                if (!state || !activeImageEdit || preview.dataset.viewportGesture === 'pinch') return;
                 const dxPercent = ((event.clientX - state.pointerX) / state.previewWidth) * 100;
                 const dyPercent = ((event.clientY - state.pointerY) / state.previewHeight) * 100;
                 const next = JSON.parse(JSON.stringify(state.editState));
@@ -2419,7 +2577,7 @@
                 event.preventDefault();
             });
 
-            document.addEventListener('mouseup', () => {
+            document.addEventListener('pointerup', () => {
                 if (state?.mode === 'crop-select') {
                     if (state.selection && state.selection.width >= 3 && state.selection.height >= 3) {
                         activeImageEdit.pendingCropSelection = state.selection;
@@ -2436,6 +2594,10 @@
                     activeImageEdit.pendingCropBaseState = state.editState;
                     renderCropSelection(state.selection);
                 }
+                state = null;
+            });
+
+            document.addEventListener('pointercancel', () => {
                 state = null;
             });
 
@@ -2598,9 +2760,10 @@
                 if (clip._posterImageState) clip._imageEditState = clip._posterImageState;
             }
 
-            layer.addEventListener('mousedown', (event) => {
+            layer.addEventListener('pointerdown', (event) => {
                 const preview = layer.closest('.poster-preview');
                 if (!preview) return;
+                if (preview.dataset.viewportGesture === 'pinch') return;
                 const clip = document.querySelector(`[data-preview-layer-id="${layer.dataset.layerId}"]`);
                 if (clip) setActiveTimelineClip(clip, { ensureLayer: false });
 
@@ -2620,12 +2783,13 @@
                     height: layerRect.height
                 };
 
+                layer.setPointerCapture?.(event.pointerId);
                 event.preventDefault();
                 event.stopPropagation();
             });
 
-            document.addEventListener('mousemove', (event) => {
-                if (!state) return;
+            document.addEventListener('pointermove', (event) => {
+                if (!state || layer.closest('.poster-preview')?.dataset.viewportGesture === 'pinch') return;
                 const dx = event.clientX - state.pointerX;
                 const dy = event.clientY - state.pointerY;
 
@@ -2649,7 +2813,11 @@
                 event.preventDefault();
             });
 
-            document.addEventListener('mouseup', () => {
+            document.addEventListener('pointerup', () => {
+                state = null;
+            });
+
+            document.addEventListener('pointercancel', () => {
                 state = null;
             });
         }
@@ -3149,6 +3317,7 @@
                     <span class="export-status ${escapeText(job.status)}">${escapeText(exportStatusLabel(job.status))}</span>
                     ${exportJobMessage(job) ? `<span class="export-job-meta">${escapeText(exportJobMessage(job))}</span>` : ''}
                     ${jobOutputUrl(job) ? `<a class="export-link" href="${escapeText(jobOutputUrl(job))}" target="_blank" rel="noopener" download>下載 H.265 MP4</a>` : ''}
+                    ${jobOutputUrl(job) ? `<span class="download-hint">手機下載後請看 Safari 下載項目，或「檔案」App 的下載項目。</span>` : ''}
                 </article>
             `).join('');
         }
@@ -3515,6 +3684,8 @@
         }
 
         initializeProductSelector();
+        setupViewportGestures(document.getElementById('posterPreview'));
+        setupViewportGestures(document.getElementById('imageEditorPreview'));
         window.addEventListener('resize', applyScreenPreviewSize);
     </script>
 </body>
