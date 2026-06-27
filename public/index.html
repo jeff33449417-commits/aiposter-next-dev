@@ -1193,12 +1193,9 @@
             <div class="timeline-ruler">
                 <div class="ruler-line"></div>
                 <div class="tick" style="left: 0%;">0s</div>
-                <div class="tick" style="left: 16.66%;">5s</div>
-                <div class="tick" style="left: 33.33%;">10s</div>
-                <div class="tick" style="left: 50%;">15s</div>
-                <div class="tick" style="left: 66.66%;">20s</div>
-                <div class="tick" style="left: 83.33%;">25s</div>
-                <div class="tick" style="left: 100%;">30s</div>
+                <div class="tick" style="left: 33.33%;">5s</div>
+                <div class="tick" style="left: 66.66%;">10s</div>
+                <div class="tick" style="left: 100%;">15s</div>
                 <div class="timeline-playhead" id="timelinePlayhead" aria-hidden="true"></div>
             </div>
         </section>
@@ -1216,7 +1213,7 @@
                     <option value="add-video">在下方增加上傳視頻框</option>
                 </select>
                 <div class="clip-lane">
-                    <div class="content-slot timeline-clip" data-start="0" data-duration="30">
+                    <div class="content-slot timeline-clip" data-start="0" data-duration="15">
                         <span class="resize-handle resize-left" aria-hidden="true"></span>
                         <input class="content-input" type="text" placeholder="輸入文字" aria-label="輸入文字">
                         <div class="text-tools" aria-label="文字樣式">
@@ -1261,7 +1258,7 @@
                     <option value="add-video">在下方增加上傳視頻框</option>
                 </select>
                 <div class="clip-lane">
-                    <div class="content-slot timeline-clip" data-start="0" data-duration="30">
+                    <div class="content-slot timeline-clip" data-start="0" data-duration="15">
                         <span class="resize-handle resize-left" aria-hidden="true"></span>
                         <input class="upload-input" id="imageUpload" type="file" accept="image/*" onchange="showFileName(this, 'imageLabel')">
                         <label class="upload-label" id="imageLabel" for="imageUpload">上傳圖片</label>
@@ -1291,7 +1288,7 @@
                     <option value="add-video">在下方增加上傳視頻框</option>
                 </select>
                 <div class="clip-lane">
-                    <div class="content-slot timeline-clip" data-start="0" data-duration="30">
+                    <div class="content-slot timeline-clip" data-start="0" data-duration="15">
                         <span class="resize-handle resize-left" aria-hidden="true"></span>
                         <input class="upload-input" id="videoUpload" type="file" accept="video/*" onchange="showFileName(this, 'videoLabel')">
                         <label class="upload-label" id="videoLabel" for="videoUpload">上傳視頻</label>
@@ -1384,7 +1381,7 @@
     </section>
 
     <script>
-        const TOTAL_SECONDS = 30;
+        const TOTAL_SECONDS = 15;
         const MIN_DURATION_SECONDS = 1;
         const AI_POSTER_PRODUCTS = [
             { id: 'p1', no: 1, series: 'Series 1', name: 'Ai Poster S(店鋪名牌)', size: '168.75 × 300', width: 168.75, height: 300, ratio: '9:16', orientation: '直式', environment: '室內' },
@@ -1651,7 +1648,7 @@
                         ${entryOptionsHtml()}
                     </select>
                     <div class="clip-lane">
-                        <div class="content-slot timeline-clip" data-start="0" data-duration="30">
+                        <div class="content-slot timeline-clip" data-start="0" data-duration="15">
                             <span class="resize-handle resize-left" aria-hidden="true"></span>
                             ${clipContentHtml(type)}
                             <span class="resize-handle resize-right" aria-hidden="true"></span>
