@@ -2102,26 +2102,24 @@ function loadExportImage(src) {
     return promise;
 }
 
-async function loadExportVideo(src) {
-    if (exportAssetCache.has(src)) return exportAssetCache.get(src);
-    const promise = new Promise((resolve) => {
-        const video = document.createElement('video');
-        video.muted = true;
-        video.loop = true;
-        video.playsInline = true;
-        video.preload = 'auto';
-        video.onloadedmetadata = async () => {
-            try {
-                video.currentTime = 0;
-                await video.play();
-            } catch (error) {}
-            resolve(video);
-        };
-        video.onerror = () => resolve(video);
-        video.src = src;
+const exportDelay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Layers whose `.playback-hidden` we temporarily clear for the duration of an
+// export so their on-screen <video> stays rendered. Mobile browsers (Android
+// Chrome especially) will not decode frames from a visibility:hidden video, so
+// drawImage() of it produces a blank frame.
+let exportHiddenLayers = [];
+
+// Pause the live export videos and restore the visibility we changed.
+function endExportVideos() {
+    document.querySelectorAll('.timeline-clip').forEach((clip) => {
+        if (clip._exportVideo) {
+            try { clip._exportVideo.pause(); } catch (error) {}
+            clip._exportVideo = null;
+        }
     });
-    exportAssetCache.set(src, promise);
-    return promise;
+    exportHiddenLayers.forEach((layer) => layer.classList.add('playback-hidden'));
+    exportHiddenLayers = [];
 }
 
 function waitForVideoFrame(video, timeout = 160) {
@@ -2146,23 +2144,6 @@ function waitForVideoFrame(video, timeout = 160) {
         video.addEventListener('loadeddata', cleanup, { once: true });
         video.addEventListener('timeupdate', cleanup, { once: true });
     });
-}
-
-async function syncExportVideoToTime(video, clip, elapsedSeconds) {
-    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
-        try { await video?.play?.(); } catch (error) {}
-        return;
-    }
-    const start = parseFloat(clip.dataset.start) || 0;
-    const localTime = Math.max(0, elapsedSeconds - start);
-    const targetTime = Math.min(video.duration - 0.04, localTime % video.duration);
-    try { await video.play(); } catch (error) {}
-    if (Math.abs(video.currentTime - targetTime) > 0.45 || video.paused) {
-        try {
-            video.currentTime = Math.max(0, targetTime);
-            await waitForVideoFrame(video);
-        } catch (error) {}
-    }
 }
 
 function percentBoxForLayer(layer, clip) {
@@ -2265,12 +2246,33 @@ async function drawImageClip(ctx, clip, layer, box, effect) {
     ctx.restore();
 }
 
-async function drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds) {
+// Align the video playhead to the clip's local time WITHOUT blocking the
+// render loop. Setting currentTime requests a seek but we never await it, so a
+// device that seeks slowly can't freeze the export — the next frames pick up
+// the corrected time. A clip starting at 5s plays its video from 0s on entry,
+// and small drift during real-time playback self-corrects.
+function syncExportVideoTime(video, clip, elapsedSeconds) {
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+    const start = parseFloat(clip.dataset.start) || 0;
+    const target = Math.max(0, elapsedSeconds - start) % video.duration;
+    if (Math.abs(video.currentTime - target) > 0.3) {
+        try { video.currentTime = target; } catch (error) {}
+    }
+    if (video.paused) {
+        try { video.play().catch(() => {}); } catch (error) {}
+    }
+}
+
+// Synchronous: never await anything here. The render loop calls this once per
+// frame, so a stalling await (e.g. video.play() that never resolves on Android)
+// would freeze the whole export. The video is pre-warmed + playing in
+// prepareExportVideos(); if a frame isn't decoded yet we just skip drawing it
+// this tick and pick it up on the next frame.
+function drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds) {
     const state = clip._posterVideoState || clip._editorVideoState || fullMediaState();
-    const liveVideo = layer.querySelector('.preview-media-element');
-    const video = liveVideo || (clip._videoUrl ? await loadExportVideo(clip._videoUrl) : null);
-    await syncExportVideoToTime(video, clip, elapsedSeconds);
-    if (!video.videoWidth || !video.videoHeight) return;
+    const video = clip._exportVideo || layer.querySelector('.preview-media-element');
+    if (!video || !video.videoWidth || !video.videoHeight) return;
+    syncExportVideoTime(video, clip, elapsedSeconds);
     const crop = state.crop;
     const sx = video.videoWidth * crop.left / 100;
     const sy = video.videoHeight * crop.top / 100;
@@ -2280,7 +2282,9 @@ async function drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds) {
     ctx.globalAlpha = effect.opacity;
     ctx.translate(0, effect.offsetY);
     clipPolygon(ctx, box, state.corners);
-    ctx.drawImage(video, sx, sy, sw, sh, box.x, box.y, box.width, box.height);
+    try {
+        ctx.drawImage(video, sx, sy, sw, sh, box.x, box.y, box.width, box.height);
+    } catch (error) {}
     ctx.restore();
 }
 
@@ -2291,18 +2295,30 @@ async function prepareExportVideos() {
 
     await Promise.all(videoClips.map(async (clip) => {
         const layer = prepareClipPreviewLayer(clip);
-        const video = layer?.querySelector('.preview-media-element') || (clip._videoUrl ? await loadExportVideo(clip._videoUrl) : null);
+        if (!layer) return;
+        const video = layer.querySelector('.preview-media-element') || ensureVideoElement(layer);
         if (!video) return;
-        video.muted = true;
-        video.playsInline = true;
-        video.loop = true;
-        if (Number.isFinite(video.duration) && video.duration > 0) {
-            try {
-                video.currentTime = 0;
-                await waitForVideoFrame(video);
-            } catch (error) {}
+        if (clip._videoUrl && video.src !== clip._videoUrl) video.src = clip._videoUrl;
+
+        // Force the layer rendered (not visibility:hidden) so the browser keeps
+        // decoding frames we can drawImage() — required for Android Chrome.
+        if (layer.classList.contains('playback-hidden')) {
+            exportHiddenLayers.push(layer);
+            layer.classList.remove('playback-hidden');
         }
-        try { await video.play(); } catch (error) {}
+
+        video.muted = true;
+        video.defaultMuted = true;
+        video.playsInline = true;
+        video.setAttribute('muted', '');
+        video.setAttribute('playsinline', '');
+        video.loop = true;
+        clip._exportVideo = video;
+
+        // Bounded pre-warm: play() and the first-frame wait are each capped so a
+        // device that never resolves them can't block the export.
+        try { await Promise.race([video.play(), exportDelay(1200)]); } catch (error) {}
+        await Promise.race([waitForVideoFrame(video, 1200), exportDelay(1200)]);
     }));
 }
 
@@ -2356,7 +2372,7 @@ async function drawExportFrame(ctx, canvas, elapsedSeconds) {
         } else if (clip._imageUrl) {
             await drawImageClip(ctx, clip, layer, box, effect);
         } else if (clip._videoUrl || layer.querySelector('.preview-media-element')) {
-            await drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds);
+            drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds);
         }
     }
 }
@@ -2400,6 +2416,7 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
     });
 
     await stopped;
+    endExportVideos();
 
     return new Blob(chunks, { type: 'video/webm' });
 }
