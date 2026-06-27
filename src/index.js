@@ -45,7 +45,8 @@ function serializeJob(row) {
     ...row,
     input,
     sourceAssetUrl: input.settings?.sourceAssetUrl || null,
-    outputUrl: outputUrlForJob(row)
+    outputUrl: outputUrlForJob(row),
+    outputFilename: row?.output_r2_key ? `${row.id}_h265.mp4` : null
   };
 }
 
@@ -503,7 +504,7 @@ async function processRendererResponse(env, job, response) {
       const outputKey = data.outputR2Key || buildExportOutputKey(job);
       await env.ASSETS_BUCKET.put(outputKey, binary, {
         httpMetadata: {
-          contentType: data.mimeType || "video/mp4"
+          contentType: "video/mp4"
         },
         customMetadata: {
           ownerUserId: job.owner_user_id,
@@ -535,7 +536,7 @@ async function processRendererResponse(env, job, response) {
   const outputKey = buildExportOutputKey(job);
   await env.ASSETS_BUCKET.put(outputKey, body, {
     httpMetadata: {
-      contentType: contentType || "video/mp4"
+      contentType: "video/mp4"
     },
     customMetadata: {
       ownerUserId: job.owner_user_id,

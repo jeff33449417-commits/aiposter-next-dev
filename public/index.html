@@ -3344,8 +3344,8 @@
 
         function exportStatusLabel(status) {
             const labels = {
-                uploading: '上傳預覽檔',
-                creating_job: '建立轉檔工作',
+                uploading: '準備 MP4 素材',
+                creating_job: '建立 MP4 工作',
                 queued: '排隊中',
                 processing: 'H.265 轉檔中',
                 waiting_renderer: '等待轉檔服務',
@@ -3368,6 +3368,10 @@
             return job?.outputUrl || '';
         }
 
+        function jobOutputFilename(job) {
+            return job?.outputFilename || `${job?.id || 'ai_poster'}_h265.mp4`;
+        }
+
         function renderExportJobs() {
             const panel = document.getElementById('exportJobsPanel');
             if (!panel) return;
@@ -3378,7 +3382,7 @@
                 <article class="export-job">
                     <span class="export-status ${escapeText(job.status)}">${escapeText(exportStatusLabel(job.status))}</span>
                     ${exportJobMessage(job) ? `<span class="export-job-meta">${escapeText(exportJobMessage(job))}</span>` : ''}
-                    ${jobOutputUrl(job) ? `<a class="export-link" href="${escapeText(jobOutputUrl(job))}" target="_blank" rel="noopener" download>下載 H.265 MP4</a>` : ''}
+                    ${jobOutputUrl(job) ? `<a class="export-link" href="${escapeText(jobOutputUrl(job))}" target="_blank" rel="noopener" download="${escapeText(jobOutputFilename(job))}">下載 H.265 MP4</a>` : ''}
                     ${jobOutputUrl(job) ? `<span class="download-hint">手機下載後請看 Safari 下載項目，或「檔案」App 的下載項目。</span>` : ''}
                 </article>
             `).join('');
