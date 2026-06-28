@@ -11,6 +11,14 @@ let activeImageEdit = null;
 let activeTimelineClip = null;
 const EXPORT_FRAME_RATE = 60;
 const EXPORT_MAX_LONG_SIDE = 960;
+// Export sizing keeps the product's aspect ratio EXACTLY (never distort).
+// Lift the short side toward this target for sharper strips, but the long-side
+// ceiling wins for extreme ratios (so the short side may end up smaller while
+// the aspect stays correct). Below the hard minimum the encoder/decoder fail,
+// so such products are refused rather than distorted.
+const EXPORT_MIN_SHORT_SIDE = 320;
+const EXPORT_MAX_DIMENSION = 4096;
+const EXPORT_HARD_MIN_SHORT = 160;
 const MAX_VIDEO_UPLOAD_BYTES = 10 * 1024 * 1024;
 const PREVIEW_EFFECT_CLASSES = [
     'effect-typewriter',
@@ -65,17 +73,38 @@ function readablePreviewSize(maxWidth, maxHeight, product = selectedProduct(), o
 
 function exportCanvasSize(product = selectedProduct()) {
     const ratio = screenRatio(product);
-    if (ratio >= 1) {
-        return {
-            width: evenExportDimension(EXPORT_MAX_LONG_SIDE),
-            height: evenExportDimension(EXPORT_MAX_LONG_SIDE / ratio)
-        };
+    let width = ratio >= 1 ? EXPORT_MAX_LONG_SIDE : EXPORT_MAX_LONG_SIDE * ratio;
+    let height = ratio >= 1 ? EXPORT_MAX_LONG_SIDE / ratio : EXPORT_MAX_LONG_SIDE;
+
+    // Aspect-preserving: lift the short side toward the quality target.
+    const shortSide = Math.min(width, height);
+    if (shortSide > 0 && shortSide < EXPORT_MIN_SHORT_SIDE) {
+        const scale = EXPORT_MIN_SHORT_SIDE / shortSide;
+        width *= scale;
+        height *= scale;
+    }
+
+    // Aspect-preserving: never exceed the mobile canvas/decoder ceiling on the
+    // long side. For very extreme ratios this pulls the short side back below
+    // the target — the aspect stays exact, the frame is just smaller.
+    const longSide = Math.max(width, height);
+    if (longSide > EXPORT_MAX_DIMENSION) {
+        const scale = EXPORT_MAX_DIMENSION / longSide;
+        width *= scale;
+        height *= scale;
     }
 
     return {
-        width: evenExportDimension(EXPORT_MAX_LONG_SIDE * ratio),
-        height: evenExportDimension(EXPORT_MAX_LONG_SIDE)
+        width: evenExportDimension(width),
+        height: evenExportDimension(height)
     };
+}
+
+// An aspect-preserved frame whose short side fell below the encoder/decoder
+// minimum (only the most extreme ratios, e.g. 96:1) cannot be exported as a
+// single video without distortion. Callers refuse instead of distorting.
+function exportSizeIsViable(size) {
+    return Math.min(size.width, size.height) >= EXPORT_HARD_MIN_SHORT;
 }
 
 function evenExportDimension(value) {
@@ -2388,7 +2417,14 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
     const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
         ? 'video/webm;codecs=vp9'
         : 'video/webm';
-    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2000000 });
+    // Scale the recording bitrate with resolution so larger frames aren't
+    // starved, but cap it so the intermediate WebM stays under the renderer's
+    // video upload limit (MAX_VIDEO_UPLOAD_MB = 10MB; ~4Mbps * 15s ≈ 7.5MB).
+    const videoBitsPerSecond = Math.min(
+        4000000,
+        Math.max(2000000, Math.round(canvas.width * canvas.height * frameRate * 0.08))
+    );
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond });
     recorder.ondataavailable = (event) => {
         if (event.data.size) chunks.push(event.data);
     };
@@ -2431,6 +2467,14 @@ async function executeArrangement() {
         if (previewPlaybackId) stopTimelinePreview();
         const product = selectedProduct();
         const outputFrameRate = EXPORT_FRAME_RATE;
+        if (!exportSizeIsViable(exportCanvasSize(product))) {
+            upsertExportJob({
+                id: 'current-export',
+                status: 'failed',
+                message: '此產品比例過寬，目前無法輸出為單一 MP4 影片。'
+            });
+            return;
+        }
         const webmBlob = await recordPreviewWebM(outputFrameRate);
         upsertExportJob({ id: 'current-export', status: 'uploading' });
         const sourceAsset = await uploadAssetToCloud(webmBlob, 'ai_poster_preview.webm');
