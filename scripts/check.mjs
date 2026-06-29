@@ -79,6 +79,9 @@ const requiredSnippets = [
   ["540p-ish export long side", "const EXPORT_MAX_LONG_SIDE = 960"],
   ["mobile Safari blob download", "async function downloadJobOutput"],
   ["one active export statuses", "const ACTIVE_EXPORT_STATUSES"],
+  ["turnstile verification hook", "TURNSTILE_VERIFY_URL"],
+  ["upload rate limit", "UPLOAD_RATE_LIMIT_PER_MINUTE"],
+  ["export rate limit", "EXPORT_RATE_LIMIT_PER_MINUTE"],
   ["MP4 filename header", "filename*=UTF-8''"],
   ["one active export D1 index", "idx_jobs_one_active_export_per_user"]
 ];

@@ -1,0 +1,39 @@
+name: Deploy AI Poster Main App
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or SHA to deploy"
+        required: true
+        default: "v2-dev"
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NPM_CONFIG_CACHE: .npm-cache
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Repo checks
+        run: npm run check
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Deploy main Worker
+        run: npx wrangler deploy
