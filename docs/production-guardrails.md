@@ -110,6 +110,14 @@ npm test
 NPM_CONFIG_CACHE=.npm-cache npx wrangler@4 deploy --dry-run --outdir .wrangler/dryrun
 ```
 
+Deploy after merging:
+
+1. Open GitHub Actions.
+2. Select **Deploy AI Poster Main App**.
+3. Click **Run workflow**.
+4. Use `v2-dev` as the ref after PR merge.
+5. Confirm the deploy completes successfully.
+
 After deployment:
 
 1. Open the app through Cloudflare Access.
