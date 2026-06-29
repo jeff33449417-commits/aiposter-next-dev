@@ -9,6 +9,9 @@ let previewPlaybackId = null;
 let previewPlaybackStart = 0;
 let activeImageEdit = null;
 let activeTimelineClip = null;
+let appSecurity = { turnstile: { enabled: false, required: false, siteKey: '' } };
+let securityConfigPromise = null;
+let turnstileScriptPromise = null;
 const EXPORT_FRAME_RATE = 60;
 const EXPORT_MAX_LONG_SIDE = 960;
 const MAX_VIDEO_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -449,11 +452,97 @@ async function parseApiJson(response) {
     }
 }
 
+async function loadSecurityConfig() {
+    if (securityConfigPromise) return securityConfigPromise;
+
+    securityConfigPromise = fetch('/api/me', { cache: 'no-store' })
+        .then(parseApiJson)
+        .then((data) => {
+            appSecurity = data.security || appSecurity;
+            return appSecurity;
+        })
+        .catch((error) => {
+            console.warn('Unable to load security config:', error);
+            return appSecurity;
+        });
+
+    return securityConfigPromise;
+}
+
+function loadTurnstileScript() {
+    if (window.turnstile) return Promise.resolve(window.turnstile);
+    if (turnstileScriptPromise) return turnstileScriptPromise;
+
+    turnstileScriptPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+        script.async = true;
+        script.defer = true;
+        script.onload = () => resolve(window.turnstile);
+        script.onerror = () => reject(new Error('防機器人驗證載入失敗，請重新整理後再試。'));
+        document.head.appendChild(script);
+    });
+
+    return turnstileScriptPromise;
+}
+
+function turnstileHost() {
+    let host = document.getElementById('turnstileHost');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'turnstileHost';
+        host.className = 'turnstile-host';
+        document.body.appendChild(host);
+    }
+    return host;
+}
+
+async function turnstileToken(action) {
+    const security = await loadSecurityConfig();
+    const config = security?.turnstile || {};
+    if (!config.enabled || !config.siteKey) return '';
+
+    const turnstile = await loadTurnstileScript();
+    const host = turnstileHost();
+    host.innerHTML = '';
+
+    return new Promise((resolve, reject) => {
+        let widgetId = null;
+        const cleanup = () => {
+            if (widgetId !== null && turnstile?.remove) {
+                turnstile.remove(widgetId);
+            }
+        };
+
+        widgetId = turnstile.render(host, {
+            sitekey: config.siteKey,
+            size: 'invisible',
+            action,
+            callback: (token) => {
+                cleanup();
+                resolve(token || '');
+            },
+            'error-callback': () => {
+                cleanup();
+                reject(new Error('防機器人驗證失敗，請再試一次。'));
+            },
+            'timeout-callback': () => {
+                cleanup();
+                reject(new Error('防機器人驗證逾時，請再試一次。'));
+            }
+        });
+
+        turnstile.execute(widgetId);
+    });
+}
+
 async function uploadAssetToCloud(fileOrBlob, filename, clip) {
     if (!fileOrBlob) return null;
 
     const form = new FormData();
     form.append('file', fileOrBlob, filename || fileOrBlob.name || 'asset');
+    const token = await turnstileToken('upload');
+    if (token) form.append('turnstileToken', token);
 
     const response = await fetch('/api/assets', {
         method: 'POST',
@@ -2419,6 +2508,7 @@ async function executeArrangement() {
         const sourceAsset = await uploadAssetToCloud(webmBlob, 'ai_poster_preview.webm');
         upsertExportJob({ id: 'current-export', status: 'creating_job' });
         const canvasSize = exportCanvasSize(product);
+        const token = await turnstileToken('export');
         const response = await fetch('/api/jobs/export', {
             method: 'POST',
             headers: {
@@ -2426,6 +2516,7 @@ async function executeArrangement() {
             },
             body: JSON.stringify({
                 format: 'h265',
+                turnstileToken: token || undefined,
                 settings: {
                     sourceAssetId: sourceAsset?.id || null,
                     sourceAssetUrl: sourceAsset?.downloadUrl || null,
@@ -2471,6 +2562,7 @@ async function executeArrangement() {
 }
 
 initializeProductSelector();
+loadSecurityConfig();
 setupViewportGestures(document.getElementById('posterPreview'));
 setupViewportGestures(document.getElementById('imageEditorPreview'));
 window.addEventListener('resize', applyScreenPreviewSize);

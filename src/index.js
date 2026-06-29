@@ -6,6 +6,10 @@ const ACTIVE_EXPORT_STATUSES = ["queued", "processing", "waiting_renderer"];
 const DEFAULT_EXPORT_BACKLOG_LIMIT = 50;
 const DEFAULT_EXPORT_SECONDS_PER_JOB = 120;
 const DEFAULT_VIDEO_UPLOAD_MB = 10;
+const DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60;
+const DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE = 12;
+const DEFAULT_EXPORT_RATE_LIMIT_PER_MINUTE = 6;
+const TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
 function envNumber(env, name, fallback) {
   const value = Number(env?.[name]);
@@ -22,9 +26,130 @@ function json(data, init = {}) {
   });
 }
 
+function clientIp(request) {
+  return request.headers.get("CF-Connecting-IP")
+    || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+    || "";
+}
+
 function getAccessEmail(request) {
   const email = request.headers.get("Cf-Access-Authenticated-User-Email");
   return email ? email.trim().toLowerCase() : "";
+}
+
+function publicSecurityConfig(env) {
+  const turnstileSiteKey = (env.TURNSTILE_SITE_KEY || "").trim();
+  return {
+    turnstile: {
+      enabled: Boolean(turnstileSiteKey),
+      required: Boolean((env.TURNSTILE_SECRET_KEY || "").trim()),
+      siteKey: turnstileSiteKey
+    }
+  };
+}
+
+async function enforceRateLimit(env, request, user, scope, envVarName, fallbackLimit) {
+  if (!env.APP_KV) {
+    return null;
+  }
+
+  const limit = envNumber(env, envVarName, fallbackLimit);
+  const windowSeconds = envNumber(env, "RATE_LIMIT_WINDOW_SECONDS", DEFAULT_RATE_LIMIT_WINDOW_SECONDS);
+  const identity = user?.id || clientIp(request) || "anonymous";
+  const bucket = Math.floor(Date.now() / (windowSeconds * 1000));
+  const key = `rate:${scope}:${identity}:${bucket}`;
+  const current = Number(await env.APP_KV.get(key) || 0) + 1;
+
+  await env.APP_KV.put(key, String(current), { expirationTtl: Math.max(60, windowSeconds + 30) });
+
+  if (current <= limit) {
+    return null;
+  }
+
+  console.warn(JSON.stringify({
+    event: "rate_limited",
+    scope,
+    identity,
+    limit,
+    windowSeconds,
+    ray: request.headers.get("cf-ray") || ""
+  }));
+
+  return json({
+    ok: false,
+    code: "RATE_LIMITED",
+    message: "操作太頻繁，請稍後再試。",
+    retryAfterSeconds: windowSeconds
+  }, {
+    status: 429,
+    headers: {
+      "retry-after": String(windowSeconds)
+    }
+  });
+}
+
+async function requireTurnstile(env, request, token, user, action) {
+  const secret = (env.TURNSTILE_SECRET_KEY || "").trim();
+  if (!secret) {
+    return null;
+  }
+
+  if (!token || typeof token !== "string") {
+    return json({
+      ok: false,
+      code: "TURNSTILE_REQUIRED",
+      message: "請先完成防機器人驗證後再送出。"
+    }, { status: 403 });
+  }
+
+  const body = new URLSearchParams();
+  body.set("secret", secret);
+  body.set("response", token);
+  const remoteIp = clientIp(request);
+  if (remoteIp) {
+    body.set("remoteip", remoteIp);
+  }
+
+  let data = null;
+  try {
+    const response = await fetch(TURNSTILE_VERIFY_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      body
+    });
+    data = await response.json();
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "turnstile_verify_error",
+      action,
+      userId: user?.id || null,
+      message: error.message || "Turnstile verification failed"
+    }));
+    return json({
+      ok: false,
+      code: "TURNSTILE_UNAVAILABLE",
+      message: "防機器人驗證暫時無法使用，請稍後再試。"
+    }, { status: 503 });
+  }
+
+  if (data?.success) {
+    return null;
+  }
+
+  console.warn(JSON.stringify({
+    event: "turnstile_rejected",
+    action,
+    userId: user?.id || null,
+    errors: data?.["error-codes"] || []
+  }));
+
+  return json({
+    ok: false,
+    code: "TURNSTILE_REJECTED",
+    message: "防機器人驗證未通過，請重新操作一次。"
+  }, { status: 403 });
 }
 
 function userIdFromEmail(email) {
@@ -185,6 +310,7 @@ async function getFeaturePayload(env, user) {
 
   return {
     authenticated: Boolean(user),
+    security: publicSecurityConfig(env),
     user: user ? {
       id: user.id,
       email: user.email,
@@ -315,7 +441,7 @@ function activeStatusPlaceholders() {
 
 async function cleanupStaleExportJobs(env) {
   const timeoutMinutes = envNumber(env, "EXPORT_JOB_TIMEOUT_MINUTES", 45);
-  await env.DB.prepare(
+  const result = await env.DB.prepare(
     `UPDATE jobs
      SET status = 'failed',
          error_message = 'Timed out while waiting for MP4 export. Please submit a new export.',
@@ -324,6 +450,15 @@ async function cleanupStaleExportJobs(env) {
        AND status IN (${activeStatusPlaceholders()})
        AND datetime(updated_at) < datetime('now', ?)`
   ).bind(...ACTIVE_EXPORT_STATUSES, `-${timeoutMinutes} minutes`).run();
+
+  const changed = Number(result?.meta?.changes || 0);
+  if (changed > 0) {
+    console.warn(JSON.stringify({
+      event: "stale_export_jobs_failed",
+      count: changed,
+      timeoutMinutes
+    }));
+  }
 }
 
 async function getActiveExportForUser(env, userId) {
@@ -462,6 +597,32 @@ async function handleExportJob(request, env, user, ctx) {
     }, { status: 405, headers: { allow: "POST" } });
   }
 
+  const rateLimited = await enforceRateLimit(
+    env,
+    request,
+    user,
+    "export_submit",
+    "EXPORT_RATE_LIMIT_PER_MINUTE",
+    DEFAULT_EXPORT_RATE_LIMIT_PER_MINUTE
+  );
+  if (rateLimited) {
+    return rateLimited;
+  }
+
+  const body = await readJson(request);
+  if (!body || typeof body !== "object") {
+    return json({
+      ok: false,
+      code: "INVALID_EXPORT_PAYLOAD",
+      message: "Export payload must be JSON."
+    }, { status: 400 });
+  }
+
+  const turnstileRejected = await requireTurnstile(env, request, body.turnstileToken, user, "export");
+  if (turnstileRejected) {
+    return turnstileRejected;
+  }
+
   const featurePayload = await getFeaturePayload(env, user);
   if (!featurePayload.features.h265_export) {
     return json({
@@ -505,15 +666,6 @@ async function handleExportJob(request, env, user, ctx) {
         estimatedSeconds: activeExportCount * secondsPerJob
       }
     }, { status: 429 });
-  }
-
-  const body = await readJson(request);
-  if (!body || typeof body !== "object") {
-    return json({
-      ok: false,
-      code: "INVALID_EXPORT_PAYLOAD",
-      message: "Export payload must be JSON."
-    }, { status: 400 });
   }
 
   if (body.projectId && !(await userOwnsProject(env, user, body.projectId))) {
@@ -568,6 +720,14 @@ async function handleExportJob(request, env, user, ctx) {
         (id, owner_user_id, project_id, type, status, input_json, error_message, created_at, updated_at)
        VALUES (?, ?, ?, 'export_h265', ?, ?, ?, datetime('now'), datetime('now'))`
     ).bind(jobId, user.id, input.projectId, initialStatus, JSON.stringify(input), initialError).run();
+    console.log(JSON.stringify({
+      event: "export_job_created",
+      jobId,
+      userId: user.id,
+      status: initialStatus,
+      rendererEnabled: Boolean(rendererUrl),
+      activeExports: activeExportCount
+    }));
   } catch (error) {
     const existingJob = await getActiveExportForUser(env, user.id);
     if (existingJob) {
@@ -622,6 +782,14 @@ async function markJob(env, jobId, status, errorMessage = null, outputR2Key = nu
      WHERE id = ?
        AND status IN (${activeStatusPlaceholders()})`
   ).bind(status, errorMessage, outputR2Key, jobId, ...ACTIVE_EXPORT_STATUSES).run();
+
+  console.log(JSON.stringify({
+    event: "export_job_status",
+    jobId,
+    status,
+    hasOutput: Boolean(outputR2Key),
+    errorMessage: errorMessage || null
+  }));
 }
 
 function buildExportOutputKey(job) {
@@ -821,6 +989,18 @@ async function handleAssets(request, env, user) {
   }
 
   if (request.method === "POST") {
+    const rateLimited = await enforceRateLimit(
+      env,
+      request,
+      user,
+      "asset_upload",
+      "UPLOAD_RATE_LIMIT_PER_MINUTE",
+      DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE
+    );
+    if (rateLimited) {
+      return rateLimited;
+    }
+
     const contentType = request.headers.get("content-type") || "";
     if (!contentType.includes("multipart/form-data")) {
       return json({
@@ -833,6 +1013,11 @@ async function handleAssets(request, env, user) {
     const form = await request.formData();
     const file = form.get("file");
     const projectId = form.get("projectId") || null;
+
+    const turnstileRejected = await requireTurnstile(env, request, form.get("turnstileToken"), user, "upload");
+    if (turnstileRejected) {
+      return turnstileRejected;
+    }
 
     if (!file || typeof file === "string") {
       return json({
@@ -889,6 +1074,14 @@ async function handleAssets(request, env, user) {
         (id, owner_user_id, project_id, r2_key, mime_type, size_bytes, created_at)
        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
     ).bind(id, user.id, projectId, key, file.type || "application/octet-stream", file.size).run();
+
+    console.log(JSON.stringify({
+      event: "asset_uploaded",
+      assetId: id,
+      userId: user.id,
+      mimeType: file.type || "application/octet-stream",
+      sizeBytes: file.size
+    }));
 
     return json({
       ok: true,

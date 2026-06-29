@@ -1292,3 +1292,10 @@ body.image-editing .image-editor-screen { display: block; }
         filter: brightness(0.9);
     }
 }
+
+.turnstile-host {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 10000;
+}
