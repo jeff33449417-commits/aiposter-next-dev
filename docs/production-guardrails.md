@@ -25,6 +25,11 @@ The frontend reads the site key from `/api/me`. Uploads and MP4 export
 submissions send a Turnstile token. The Worker validates that token with
 Cloudflare Siteverify before accepting the request.
 
+Reference:
+
+- Cloudflare Turnstile server-side validation:
+  https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
+
 If `TURNSTILE_SECRET_KEY` is not set, the app keeps working without Turnstile.
 This makes the code safe to deploy before the Cloudflare dashboard setup is
 finished.
@@ -73,6 +78,11 @@ Suggested limit:
 If the Cloudflare plan only allows one rate limit rule, keep the Worker-level
 limits enabled and create the WAF rule for `/api/jobs/export` first. MP4 export
 is the expensive path.
+
+Reference:
+
+- Cloudflare WAF rate limiting rules:
+  https://developers.cloudflare.com/waf/rate-limiting-rules/
 
 ## 4. Existing MP4 Guardrails
 
