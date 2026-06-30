@@ -27,6 +27,7 @@ function isAuthorized(request) {
 }
 
 function runFfmpeg(inputPath, outputPath, frameRate) {
+  const frameRateFilter = frameRate ? `fps=${frameRate},` : "";
   const args = [
     "-y",
     "-hide_banner",
@@ -36,7 +37,7 @@ function runFfmpeg(inputPath, outputPath, frameRate) {
     inputPath,
     "-an",
     "-vf",
-    "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+    `${frameRateFilter}scale=trunc(iw/2)*2:trunc(ih/2)*2`,
     "-c:v",
     "libx265",
     "-tag:v",
@@ -50,10 +51,6 @@ function runFfmpeg(inputPath, outputPath, frameRate) {
     "-movflags",
     "+faststart"
   ];
-
-  if (frameRate) {
-    args.push("-r", String(frameRate));
-  }
 
   args.push(outputPath);
 

@@ -19,6 +19,14 @@ test("frontend keeps the current MP4 export contract", () => {
   assert.match(app, /appearance: 'interaction-only'/);
   assert.match(app, /turnstile\.execute\(host\)/);
   assert.doesNotMatch(app, /防機器人驗證逾時/);
+  assert.match(app, /function createExportFrameLayout/);
+  assert.match(app, /Math\.round\(rawElapsed \* frameRate\) \/ frameRate/);
+});
+
+test("renderer normalizes MP4 output cadence", () => {
+  const renderer = read("renderer/server.js");
+  assert.match(renderer, /fps=\$\{frameRate\}/);
+  assert.match(renderer, /scale=trunc\(iw\/2\)\*2:trunc\(ih\/2\)\*2/);
 });
 
 test("backend enforces MP4 queue safeguards", () => {

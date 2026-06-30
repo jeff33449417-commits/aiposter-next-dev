@@ -76,6 +76,7 @@ if (inlineScript) {
 const requiredSnippets = [
   ["15 second timeline", "const TOTAL_SECONDS = 15"],
   ["fixed 60fps export", "const EXPORT_FRAME_RATE = 60"],
+  ["stable export frame layout", "function createExportFrameLayout"],
   ["540p-ish export long side", "const EXPORT_MAX_LONG_SIDE = 960"],
   ["bounded turnstile token", "const TURNSTILE_TOKEN_TIMEOUT_MS = 10000"],
   ["mobile Safari blob download", "async function downloadJobOutput"],
@@ -86,6 +87,7 @@ const requiredSnippets = [
   ["upload rate limit", "UPLOAD_RATE_LIMIT_PER_MINUTE"],
   ["export rate limit", "EXPORT_RATE_LIMIT_PER_MINUTE"],
   ["MP4 filename header", "filename*=UTF-8''"],
+  ["renderer constant frame cadence", "fps=${frameRate}"],
   ["one active export D1 index", "idx_jobs_one_active_export_per_user"]
 ];
 
@@ -94,6 +96,7 @@ const requiredSnippets = [
 const combined = [
   html,
   readFileSync(join(root, "public/js/app.js"), "utf8"),
+  readFileSync(join(root, "renderer/server.js"), "utf8"),
   readFileSync(join(root, "src/index.js"), "utf8"),
   readFileSync(join(root, "migrations/0003_export_queue_limits.sql"), "utf8")
 ].join("\n");

@@ -2334,6 +2334,34 @@ function clipRectForCanvas(layer, canvas, previewRect, scaleX, scaleY, clip) {
     };
 }
 
+function exportLayerRank(clip) {
+    if (clip.querySelector('.content-input')) return 3;
+    if (clip.querySelector('.upload-input')?.accept === 'image/*') return 2;
+    if (clip.querySelector('.upload-input')?.accept === 'video/*') return 1;
+    return 0;
+}
+
+function createExportFrameLayout(canvas) {
+    const preview = document.getElementById('posterPreview');
+    const previewRect = preview.getBoundingClientRect();
+    const scaleX = canvas.width / previewRect.width;
+    const scaleY = canvas.height / previewRect.height;
+    const clips = Array.from(document.querySelectorAll('.timeline-clip')).sort((a, b) => exportLayerRank(a) - exportLayerRank(b));
+    const items = clips.map((clip) => {
+        const layer = prepareClipPreviewLayer(clip);
+        if (!layer) return null;
+        const box = clipRectForCanvas(layer, canvas, previewRect, scaleX, scaleY, clip);
+        return {
+            clip,
+            layer,
+            box,
+            start: parseFloat(clip.dataset.start) || 0,
+            duration: parseFloat(clip.dataset.duration) || TOTAL_SECONDS
+        };
+    }).filter(Boolean);
+    return { scaleY, items };
+}
+
 function exportEffectOpacity(clip, elapsedSeconds) {
     const row = clip.closest('.material-row');
     const start = parseFloat(clip.dataset.start) || 0;
@@ -2461,32 +2489,16 @@ function drawTextClip(ctx, clip, layer, box, scaleY, effect) {
     ctx.restore();
 }
 
-async function drawExportFrame(ctx, canvas, elapsedSeconds) {
-    const preview = document.getElementById('posterPreview');
-    const previewRect = preview.getBoundingClientRect();
-    const scaleX = canvas.width / previewRect.width;
-    const scaleY = canvas.height / previewRect.height;
+async function drawExportFrame(ctx, canvas, elapsedSeconds, layout = createExportFrameLayout(canvas)) {
+    const { items, scaleY } = layout;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#fbf8ec';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    const clips = Array.from(document.querySelectorAll('.timeline-clip')).sort((a, b) => {
-        const rank = (clip) => {
-            if (clip.querySelector('.content-input')) return 3;
-            if (clip.querySelector('.upload-input')?.accept === 'image/*') return 2;
-            if (clip.querySelector('.upload-input')?.accept === 'video/*') return 1;
-            return 0;
-        };
-        return rank(a) - rank(b);
-    });
-    for (const clip of clips) {
-        const start = parseFloat(clip.dataset.start) || 0;
-        const duration = parseFloat(clip.dataset.duration) || TOTAL_SECONDS;
+    for (const item of items) {
+        const { clip, layer, box, start, duration } = item;
         if (elapsedSeconds < start || elapsedSeconds > start + duration) continue;
 
-        const layer = prepareClipPreviewLayer(clip);
-        if (!layer) continue;
-        const box = clipRectForCanvas(layer, canvas, previewRect, scaleX, scaleY, clip);
         const effect = exportEffectOpacity(clip, elapsedSeconds);
 
         if (clip.querySelector('.content-input')) {
@@ -2517,6 +2529,7 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
 
     document.querySelectorAll('.timeline-clip').forEach(prepareClipPreviewLayer);
     await prepareExportVideos();
+    const layout = createExportFrameLayout(canvas);
     recorder.start(1000);
     const startTime = performance.now();
     const stopped = new Promise((resolve) => {
@@ -2525,8 +2538,9 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
 
     await new Promise((resolve) => {
         const render = async () => {
-            const elapsed = Math.min(TOTAL_SECONDS, (performance.now() - startTime) / 1000);
-            await drawExportFrame(ctx, canvas, elapsed);
+            const rawElapsed = Math.min(TOTAL_SECONDS, (performance.now() - startTime) / 1000);
+            const elapsed = Math.round(rawElapsed * frameRate) / frameRate;
+            await drawExportFrame(ctx, canvas, elapsed, layout);
             if (elapsed >= TOTAL_SECONDS) {
                 recorder.stop();
                 resolve();
