@@ -18,6 +18,7 @@ test("frontend keeps the current MP4 export contract", () => {
   assert.match(app, /execution: 'execute'/);
   assert.match(app, /appearance: 'interaction-only'/);
   assert.match(app, /turnstile\.execute\(host\)/);
+  assert.doesNotMatch(app, /防機器人驗證逾時/);
 });
 
 test("backend enforces MP4 queue safeguards", () => {

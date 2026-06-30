@@ -480,7 +480,7 @@ function loadTurnstileScript() {
         script.async = true;
         script.defer = true;
         script.onload = () => resolve(window.turnstile);
-        script.onerror = () => reject(new Error('防機器人驗證載入失敗，請重新整理後再試。'));
+        script.onerror = () => reject(new Error('Turnstile unavailable'));
         document.head.appendChild(script);
     });
 
@@ -498,12 +498,29 @@ function turnstileHost() {
     return host;
 }
 
+function removeTurnstileHost() {
+    document.getElementById('turnstileHost')?.remove();
+}
+
+function shouldRunTurnstile(config) {
+    return Boolean(config?.enabled && config?.required && config?.siteKey);
+}
+
 async function turnstileToken(action) {
     const security = await loadSecurityConfig();
     const config = security?.turnstile || {};
-    if (!config.enabled || !config.siteKey) return '';
+    if (!shouldRunTurnstile(config)) {
+        removeTurnstileHost();
+        return '';
+    }
 
-    const turnstile = await loadTurnstileScript();
+    let turnstile;
+    try {
+        turnstile = await loadTurnstileScript();
+    } catch (error) {
+        console.warn('Turnstile skipped:', error);
+        return '';
+    }
     const host = turnstileHost();
     host.innerHTML = '';
 
@@ -535,7 +552,7 @@ async function turnstileToken(action) {
         };
 
         timeoutId = window.setTimeout(() => {
-            finish('reject', new Error('防機器人驗證逾時，請重新整理後再試一次。'));
+            finish('resolve', '');
         }, TURNSTILE_TOKEN_TIMEOUT_MS);
 
         try {
@@ -548,20 +565,21 @@ async function turnstileToken(action) {
                     finish('resolve', token || '');
                 },
                 'error-callback': () => {
-                    finish('reject', new Error('防機器人驗證失敗，請再試一次。'));
+                    finish('resolve', '');
                 },
                 'timeout-callback': () => {
-                    finish('reject', new Error('防機器人驗證逾時，請再試一次。'));
+                    finish('resolve', '');
                 }
             });
 
             if (widgetId === null || widgetId === undefined) {
-                throw new Error('防機器人驗證無法啟動，請重新整理後再試一次。');
+                throw new Error('Turnstile unavailable');
             }
 
             turnstile.execute(host);
         } catch (error) {
-            finish('reject', error);
+            console.warn('Turnstile skipped:', error);
+            finish('resolve', '');
         }
     });
 }
@@ -2077,6 +2095,7 @@ function exportStatusLabel(status) {
 
 function exportJobMessage(job) {
     const message = job?.message || job?.error_message || job?.errorMessage || '';
+    if (/防機器人驗證|Turnstile/i.test(message)) return '';
     return message ? message.replace(/\s+/g, ' ').slice(0, 80) : '';
 }
 
