@@ -559,7 +559,7 @@ async function turnstileToken(action) {
                 throw new Error('防機器人驗證無法啟動，請重新整理後再試一次。');
             }
 
-            turnstile.execute(widgetId);
+            turnstile.execute(host);
         } catch (error) {
             finish('reject', error);
         }

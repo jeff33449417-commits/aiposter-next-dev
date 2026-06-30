@@ -17,6 +17,7 @@ test("frontend keeps the current MP4 export contract", () => {
   assert.match(app, /const TURNSTILE_TOKEN_TIMEOUT_MS = 10000;/);
   assert.match(app, /execution: 'execute'/);
   assert.match(app, /appearance: 'interaction-only'/);
+  assert.match(app, /turnstile\.execute\(host\)/);
 });
 
 test("backend enforces MP4 queue safeguards", () => {
