@@ -81,6 +81,7 @@ const requiredSnippets = [
   ["mobile Safari blob download", "async function downloadJobOutput"],
   ["one active export statuses", "const ACTIVE_EXPORT_STATUSES"],
   ["turnstile verification hook", "TURNSTILE_VERIFY_URL"],
+  ["turnstile feature toggle", "TURNSTILE_ENABLED"],
   ["turnstile site key var", "TURNSTILE_SITE_KEY"],
   ["upload rate limit", "UPLOAD_RATE_LIMIT_PER_MINUTE"],
   ["export rate limit", "EXPORT_RATE_LIMIT_PER_MINUTE"],

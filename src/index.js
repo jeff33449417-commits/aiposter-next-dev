@@ -37,13 +37,18 @@ function getAccessEmail(request) {
   return email ? email.trim().toLowerCase() : "";
 }
 
+function turnstileEnabled(env) {
+  return String(env.TURNSTILE_ENABLED || "").trim().toLowerCase() === "true";
+}
+
 function publicSecurityConfig(env) {
   const turnstileSiteKey = (env.TURNSTILE_SITE_KEY || "").trim();
+  const enabled = turnstileEnabled(env) && Boolean(turnstileSiteKey);
   return {
     turnstile: {
-      enabled: Boolean(turnstileSiteKey),
-      required: Boolean((env.TURNSTILE_SECRET_KEY || "").trim()),
-      siteKey: turnstileSiteKey
+      enabled,
+      required: enabled && Boolean((env.TURNSTILE_SECRET_KEY || "").trim()),
+      siteKey: enabled ? turnstileSiteKey : ""
     }
   };
 }
@@ -89,6 +94,10 @@ async function enforceRateLimit(env, request, user, scope, envVarName, fallbackL
 }
 
 async function requireTurnstile(env, request, token, user, action) {
+  if (!turnstileEnabled(env)) {
+    return null;
+  }
+
   const secret = (env.TURNSTILE_SECRET_KEY || "").trim();
   if (!secret) {
     return null;
