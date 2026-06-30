@@ -12,6 +12,7 @@ let activeTimelineClip = null;
 let appSecurity = { turnstile: { enabled: false, required: false, siteKey: '' } };
 let securityConfigPromise = null;
 let turnstileScriptPromise = null;
+const TURNSTILE_TOKEN_TIMEOUT_MS = 10000;
 const EXPORT_FRAME_RATE = 60;
 const EXPORT_MAX_LONG_SIDE = 960;
 const MAX_VIDEO_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -508,31 +509,60 @@ async function turnstileToken(action) {
 
     return new Promise((resolve, reject) => {
         let widgetId = null;
+        let settled = false;
+        let timeoutId = null;
+
         const cleanup = () => {
+            window.clearTimeout(timeoutId);
             if (widgetId !== null && turnstile?.remove) {
-                turnstile.remove(widgetId);
+                try {
+                    turnstile.remove(widgetId);
+                } catch (error) {
+                    console.warn('Turnstile cleanup failed:', error);
+                }
             }
         };
 
-        widgetId = turnstile.render(host, {
-            sitekey: config.siteKey,
-            size: 'invisible',
-            action,
-            callback: (token) => {
-                cleanup();
-                resolve(token || '');
-            },
-            'error-callback': () => {
-                cleanup();
-                reject(new Error('防機器人驗證失敗，請再試一次。'));
-            },
-            'timeout-callback': () => {
-                cleanup();
-                reject(new Error('防機器人驗證逾時，請再試一次。'));
+        const finish = (type, value) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            if (type === 'resolve') {
+                resolve(value);
+            } else {
+                reject(value);
             }
-        });
+        };
 
-        turnstile.execute(widgetId);
+        timeoutId = window.setTimeout(() => {
+            finish('reject', new Error('防機器人驗證逾時，請重新整理後再試一次。'));
+        }, TURNSTILE_TOKEN_TIMEOUT_MS);
+
+        try {
+            widgetId = turnstile.render(host, {
+                sitekey: config.siteKey,
+                execution: 'execute',
+                appearance: 'interaction-only',
+                action,
+                callback: (token) => {
+                    finish('resolve', token || '');
+                },
+                'error-callback': () => {
+                    finish('reject', new Error('防機器人驗證失敗，請再試一次。'));
+                },
+                'timeout-callback': () => {
+                    finish('reject', new Error('防機器人驗證逾時，請再試一次。'));
+                }
+            });
+
+            if (widgetId === null || widgetId === undefined) {
+                throw new Error('防機器人驗證無法啟動，請重新整理後再試一次。');
+            }
+
+            turnstile.execute(widgetId);
+        } catch (error) {
+            finish('reject', error);
+        }
     });
 }
 

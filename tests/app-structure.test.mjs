@@ -14,6 +14,9 @@ test("frontend keeps the current MP4 export contract", () => {
   assert.match(app, /async function downloadJobOutput/);
   assert.match(app, /new Blob\(\[blob\], \{ type: 'video\/mp4' \}\)/);
   assert.match(app, /下載 H\.265 MP4/);
+  assert.match(app, /const TURNSTILE_TOKEN_TIMEOUT_MS = 10000;/);
+  assert.match(app, /execution: 'execute'/);
+  assert.match(app, /appearance: 'interaction-only'/);
 });
 
 test("backend enforces MP4 queue safeguards", () => {
@@ -39,6 +42,7 @@ test("Cloudflare queue and D1 limits are configured", () => {
   assert.match(wrangler, /"MAX_VIDEO_UPLOAD_MB": "10"/);
   assert.match(wrangler, /"UPLOAD_RATE_LIMIT_PER_MINUTE": "12"/);
   assert.match(wrangler, /"EXPORT_RATE_LIMIT_PER_MINUTE": "6"/);
+  assert.match(wrangler, /"TURNSTILE_SITE_KEY": "0x4AAAA/);
   assert.match(migration, /CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_one_active_export_per_user/);
   assert.match(migration, /status IN \('queued', 'processing', 'waiting_renderer'\)/);
 });
