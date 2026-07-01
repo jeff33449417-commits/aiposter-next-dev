@@ -53,8 +53,11 @@ test("Cloudflare queue and D1 limits are configured", () => {
   assert.match(wrangler, /"MAX_VIDEO_UPLOAD_MB": "10"/);
   assert.match(wrangler, /"UPLOAD_RATE_LIMIT_PER_MINUTE": "12"/);
   assert.match(wrangler, /"EXPORT_RATE_LIMIT_PER_MINUTE": "6"/);
-  assert.match(wrangler, /"TURNSTILE_ENABLED": "false"/);
-  assert.match(wrangler, /"TURNSTILE_SITE_KEY": "0x4AAAA/);
+  // Turnstile vars are intentionally kept out of wrangler.jsonc so no visible
+  // human-verification is configured. The backend only enables Turnstile when
+  // TURNSTILE_ENABLED === "true", so their absence keeps it disabled.
+  assert.doesNotMatch(wrangler, /"TURNSTILE_ENABLED"/);
+  assert.doesNotMatch(wrangler, /"TURNSTILE_SITE_KEY"/);
   assert.match(migration, /CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_one_active_export_per_user/);
   assert.match(migration, /status IN \('queued', 'processing', 'waiting_renderer'\)/);
 });

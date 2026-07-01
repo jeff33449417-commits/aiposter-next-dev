@@ -15,6 +15,14 @@ let turnstileScriptPromise = null;
 const TURNSTILE_TOKEN_TIMEOUT_MS = 10000;
 const EXPORT_FRAME_RATE = 60;
 const EXPORT_MAX_LONG_SIDE = 960;
+// Export sizing keeps the product's aspect ratio EXACTLY (never distort).
+// Lift the short side toward this target for sharper strips, but the long-side
+// ceiling wins for extreme ratios (so the short side may end up smaller while
+// the aspect stays correct). Below the hard minimum the encoder/decoder fail,
+// so such products are refused rather than distorted.
+const EXPORT_MIN_SHORT_SIDE = 320;
+const EXPORT_MAX_DIMENSION = 4096;
+const EXPORT_HARD_MIN_SHORT = 160;
 const MAX_VIDEO_UPLOAD_BYTES = 10 * 1024 * 1024;
 const PREVIEW_EFFECT_CLASSES = [
     'effect-typewriter',
@@ -69,17 +77,38 @@ function readablePreviewSize(maxWidth, maxHeight, product = selectedProduct(), o
 
 function exportCanvasSize(product = selectedProduct()) {
     const ratio = screenRatio(product);
-    if (ratio >= 1) {
-        return {
-            width: evenExportDimension(EXPORT_MAX_LONG_SIDE),
-            height: evenExportDimension(EXPORT_MAX_LONG_SIDE / ratio)
-        };
+    let width = ratio >= 1 ? EXPORT_MAX_LONG_SIDE : EXPORT_MAX_LONG_SIDE * ratio;
+    let height = ratio >= 1 ? EXPORT_MAX_LONG_SIDE / ratio : EXPORT_MAX_LONG_SIDE;
+
+    // Aspect-preserving: lift the short side toward the quality target.
+    const shortSide = Math.min(width, height);
+    if (shortSide > 0 && shortSide < EXPORT_MIN_SHORT_SIDE) {
+        const scale = EXPORT_MIN_SHORT_SIDE / shortSide;
+        width *= scale;
+        height *= scale;
+    }
+
+    // Aspect-preserving: never exceed the mobile canvas/decoder ceiling on the
+    // long side. For very extreme ratios this pulls the short side back below
+    // the target — the aspect stays exact, the frame is just smaller.
+    const longSide = Math.max(width, height);
+    if (longSide > EXPORT_MAX_DIMENSION) {
+        const scale = EXPORT_MAX_DIMENSION / longSide;
+        width *= scale;
+        height *= scale;
     }
 
     return {
-        width: evenExportDimension(EXPORT_MAX_LONG_SIDE * ratio),
-        height: evenExportDimension(EXPORT_MAX_LONG_SIDE)
+        width: evenExportDimension(width),
+        height: evenExportDimension(height)
     };
+}
+
+// An aspect-preserved frame whose short side fell below the encoder/decoder
+// minimum (only the most extreme ratios, e.g. 96:1) cannot be exported as a
+// single video without distortion. Callers refuse instead of distorting.
+function exportSizeIsViable(size) {
+    return Math.min(size.width, size.height) >= EXPORT_HARD_MIN_SHORT;
 }
 
 function evenExportDimension(value) {
@@ -2240,26 +2269,24 @@ function loadExportImage(src) {
     return promise;
 }
 
-async function loadExportVideo(src) {
-    if (exportAssetCache.has(src)) return exportAssetCache.get(src);
-    const promise = new Promise((resolve) => {
-        const video = document.createElement('video');
-        video.muted = true;
-        video.loop = true;
-        video.playsInline = true;
-        video.preload = 'auto';
-        video.onloadedmetadata = async () => {
-            try {
-                video.currentTime = 0;
-                await video.play();
-            } catch (error) {}
-            resolve(video);
-        };
-        video.onerror = () => resolve(video);
-        video.src = src;
+const exportDelay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Layers whose `.playback-hidden` we temporarily clear for the duration of an
+// export so their on-screen <video> stays rendered. Mobile browsers (Android
+// Chrome especially) will not decode frames from a visibility:hidden video, so
+// drawImage() of it produces a blank frame.
+let exportHiddenLayers = [];
+
+// Pause the live export videos and restore the visibility we changed.
+function endExportVideos() {
+    document.querySelectorAll('.timeline-clip').forEach((clip) => {
+        if (clip._exportVideo) {
+            try { clip._exportVideo.pause(); } catch (error) {}
+            clip._exportVideo = null;
+        }
     });
-    exportAssetCache.set(src, promise);
-    return promise;
+    exportHiddenLayers.forEach((layer) => layer.classList.add('playback-hidden'));
+    exportHiddenLayers = [];
 }
 
 function waitForVideoFrame(video, timeout = 160) {
@@ -2284,23 +2311,6 @@ function waitForVideoFrame(video, timeout = 160) {
         video.addEventListener('loadeddata', cleanup, { once: true });
         video.addEventListener('timeupdate', cleanup, { once: true });
     });
-}
-
-async function syncExportVideoToTime(video, clip, elapsedSeconds) {
-    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) {
-        try { await video?.play?.(); } catch (error) {}
-        return;
-    }
-    const start = parseFloat(clip.dataset.start) || 0;
-    const localTime = Math.max(0, elapsedSeconds - start);
-    const targetTime = Math.min(video.duration - 0.04, localTime % video.duration);
-    try { await video.play(); } catch (error) {}
-    if (Math.abs(video.currentTime - targetTime) > 0.45 || video.paused) {
-        try {
-            video.currentTime = Math.max(0, targetTime);
-            await waitForVideoFrame(video);
-        } catch (error) {}
-    }
 }
 
 function percentBoxForLayer(layer, clip) {
@@ -2431,12 +2441,33 @@ async function drawImageClip(ctx, clip, layer, box, effect) {
     ctx.restore();
 }
 
-async function drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds) {
+// Align the video playhead to the clip's local time WITHOUT blocking the
+// render loop. Setting currentTime requests a seek but we never await it, so a
+// device that seeks slowly can't freeze the export — the next frames pick up
+// the corrected time. A clip starting at 5s plays its video from 0s on entry,
+// and small drift during real-time playback self-corrects.
+function syncExportVideoTime(video, clip, elapsedSeconds) {
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+    const start = parseFloat(clip.dataset.start) || 0;
+    const target = Math.max(0, elapsedSeconds - start) % video.duration;
+    if (Math.abs(video.currentTime - target) > 0.3) {
+        try { video.currentTime = target; } catch (error) {}
+    }
+    if (video.paused) {
+        try { video.play().catch(() => {}); } catch (error) {}
+    }
+}
+
+// Synchronous: never await anything here. The render loop calls this once per
+// frame, so a stalling await (e.g. video.play() that never resolves on Android)
+// would freeze the whole export. The video is pre-warmed + playing in
+// prepareExportVideos(); if a frame isn't decoded yet we just skip drawing it
+// this tick and pick it up on the next frame.
+function drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds) {
     const state = clip._posterVideoState || clip._editorVideoState || fullMediaState();
-    const liveVideo = layer.querySelector('.preview-media-element');
-    const video = liveVideo || (clip._videoUrl ? await loadExportVideo(clip._videoUrl) : null);
-    await syncExportVideoToTime(video, clip, elapsedSeconds);
-    if (!video.videoWidth || !video.videoHeight) return;
+    const video = clip._exportVideo || layer.querySelector('.preview-media-element');
+    if (!video || !video.videoWidth || !video.videoHeight) return;
+    syncExportVideoTime(video, clip, elapsedSeconds);
     const crop = state.crop;
     const sx = video.videoWidth * crop.left / 100;
     const sy = video.videoHeight * crop.top / 100;
@@ -2446,7 +2477,9 @@ async function drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds) {
     ctx.globalAlpha = effect.opacity;
     ctx.translate(0, effect.offsetY);
     clipPolygon(ctx, box, state.corners);
-    ctx.drawImage(video, sx, sy, sw, sh, box.x, box.y, box.width, box.height);
+    try {
+        ctx.drawImage(video, sx, sy, sw, sh, box.x, box.y, box.width, box.height);
+    } catch (error) {}
     ctx.restore();
 }
 
@@ -2457,18 +2490,30 @@ async function prepareExportVideos() {
 
     await Promise.all(videoClips.map(async (clip) => {
         const layer = prepareClipPreviewLayer(clip);
-        const video = layer?.querySelector('.preview-media-element') || (clip._videoUrl ? await loadExportVideo(clip._videoUrl) : null);
+        if (!layer) return;
+        const video = layer.querySelector('.preview-media-element') || ensureVideoElement(layer);
         if (!video) return;
-        video.muted = true;
-        video.playsInline = true;
-        video.loop = true;
-        if (Number.isFinite(video.duration) && video.duration > 0) {
-            try {
-                video.currentTime = 0;
-                await waitForVideoFrame(video);
-            } catch (error) {}
+        if (clip._videoUrl && video.src !== clip._videoUrl) video.src = clip._videoUrl;
+
+        // Force the layer rendered (not visibility:hidden) so the browser keeps
+        // decoding frames we can drawImage() — required for Android Chrome.
+        if (layer.classList.contains('playback-hidden')) {
+            exportHiddenLayers.push(layer);
+            layer.classList.remove('playback-hidden');
         }
-        try { await video.play(); } catch (error) {}
+
+        video.muted = true;
+        video.defaultMuted = true;
+        video.playsInline = true;
+        video.setAttribute('muted', '');
+        video.setAttribute('playsinline', '');
+        video.loop = true;
+        clip._exportVideo = video;
+
+        // Bounded pre-warm: play() and the first-frame wait are each capped so a
+        // device that never resolves them can't block the export.
+        try { await Promise.race([video.play(), exportDelay(1200)]); } catch (error) {}
+        await Promise.race([waitForVideoFrame(video, 1200), exportDelay(1200)]);
     }));
 }
 
@@ -2506,7 +2551,7 @@ async function drawExportFrame(ctx, canvas, elapsedSeconds, layout = createExpor
         } else if (clip._imageUrl) {
             await drawImageClip(ctx, clip, layer, box, effect);
         } else if (clip._videoUrl || layer.querySelector('.preview-media-element')) {
-            await drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds);
+            drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds);
         }
     }
 }
@@ -2522,7 +2567,14 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
     const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
         ? 'video/webm;codecs=vp9'
         : 'video/webm';
-    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2000000 });
+    // Scale the recording bitrate with resolution so larger frames aren't
+    // starved, but cap it so the intermediate WebM stays under the renderer's
+    // video upload limit (MAX_VIDEO_UPLOAD_MB = 10MB; ~4Mbps * 15s ≈ 7.5MB).
+    const videoBitsPerSecond = Math.min(
+        4000000,
+        Math.max(2000000, Math.round(canvas.width * canvas.height * frameRate * 0.08))
+    );
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond });
     recorder.ondataavailable = (event) => {
         if (event.data.size) chunks.push(event.data);
     };
@@ -2552,6 +2604,7 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
     });
 
     await stopped;
+    endExportVideos();
 
     return new Blob(chunks, { type: 'video/webm' });
 }
@@ -2566,6 +2619,14 @@ async function executeArrangement() {
         if (previewPlaybackId) stopTimelinePreview();
         const product = selectedProduct();
         const outputFrameRate = EXPORT_FRAME_RATE;
+        if (!exportSizeIsViable(exportCanvasSize(product))) {
+            upsertExportJob({
+                id: 'current-export',
+                status: 'failed',
+                message: '此產品比例過寬，目前無法輸出為單一 MP4 影片。'
+            });
+            return;
+        }
         const webmBlob = await recordPreviewWebM(outputFrameRate);
         upsertExportJob({ id: 'current-export', status: 'uploading' });
         const sourceAsset = await uploadAssetToCloud(webmBlob, 'ai_poster_preview.webm');
