@@ -9,6 +9,8 @@ import { createServer } from "node:http";
 const port = Number(process.env.PORT || 8788);
 const rendererToken = process.env.RENDERER_TOKEN || "";
 const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES || 300 * 1024 * 1024);
+const defaultDurationSeconds = Number(process.env.EXPORT_DURATION_SECONDS || 15);
+const defaultFrameRate = Number(process.env.EXPORT_FRAME_RATE || 60);
 
 function sendJson(response, status, data) {
   response.writeHead(status, {
@@ -26,16 +28,54 @@ function isAuthorized(request) {
   return request.headers.authorization === `Bearer ${rendererToken}`;
 }
 
-function runFfmpeg(inputPath, outputPath, frameRate, durationSeconds) {
+function probeVideoDuration(inputPath) {
+  const args = [
+    "-v",
+    "error",
+    "-show_entries",
+    "format=duration",
+    "-of",
+    "default=noprint_wrappers=1:nokey=1",
+    inputPath
+  ];
+
+  return new Promise((resolve) => {
+    const child = spawn("ffprobe", args);
+    let stdout = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        resolve(null);
+        return;
+      }
+
+      const duration = Number(stdout.trim());
+      resolve(Number.isFinite(duration) && duration > 0 ? duration : null);
+    });
+  });
+}
+
+function runFfmpeg(inputPath, outputPath, frameRate, durationSeconds, sourceDurationSeconds) {
   const filters = [];
   if (frameRate) {
     // Mobile browsers can stretch canvas capture timestamps when frame drawing
-    // falls behind. Rebuild the export timeline from frame order so the final
-    // MP4 stays at the requested cadence instead of inheriting wall-clock lag.
-    filters.push(`setpts=N/(${frameRate}*TB)`);
+    // falls behind. Rescale the captured wall-clock timeline back to the fixed
+    // export duration, then resample to the requested cadence.
+    if (durationSeconds && sourceDurationSeconds) {
+      const ratio = Math.max(0.01, durationSeconds / sourceDurationSeconds);
+      filters.push(`setpts=PTS*${ratio.toFixed(8)}`);
+    } else {
+      filters.push(`setpts=N/(${frameRate}*TB)`);
+    }
     filters.push(`fps=${frameRate}`);
   }
   if (durationSeconds) {
+    filters.push(`tpad=stop_mode=clone:stop_duration=${durationSeconds}`);
     filters.push(`trim=duration=${durationSeconds}`);
   }
   filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2");
@@ -110,9 +150,10 @@ async function handleRender(request, response) {
       return;
     }
 
-    const frameRate = Number(request.headers["x-aiposter-frame-rate"] || 0) || null;
-    const durationSeconds = Number(request.headers["x-aiposter-duration-seconds"] || 0) || null;
-    await runFfmpeg(inputPath, outputPath, frameRate, durationSeconds);
+    const frameRate = Number(request.headers["x-aiposter-frame-rate"] || 0) || defaultFrameRate;
+    const durationSeconds = Number(request.headers["x-aiposter-duration-seconds"] || 0) || defaultDurationSeconds;
+    const sourceDurationSeconds = await probeVideoDuration(inputPath);
+    await runFfmpeg(inputPath, outputPath, frameRate, durationSeconds, sourceDurationSeconds);
 
     const outputInfo = await stat(outputPath);
     response.writeHead(200, {

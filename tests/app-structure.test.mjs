@@ -27,9 +27,17 @@ test("frontend keeps the current MP4 export contract", () => {
 
 test("renderer normalizes MP4 output cadence", () => {
   const renderer = read("renderer/server.js");
+  assert.match(renderer, /const defaultDurationSeconds = Number\(process\.env\.EXPORT_DURATION_SECONDS \|\| 15\)/);
+  assert.match(renderer, /const defaultFrameRate = Number\(process\.env\.EXPORT_FRAME_RATE \|\| 60\)/);
+  assert.match(renderer, /function probeVideoDuration/);
+  assert.match(renderer, /spawn\("ffprobe", args\)/);
   assert.match(renderer, /x-aiposter-duration-seconds/);
+  assert.match(renderer, /x-aiposter-frame-rate/);
+  assert.match(renderer, /sourceDurationSeconds = await probeVideoDuration\(inputPath\)/);
+  assert.match(renderer, /setpts=PTS\*\$\{ratio\.toFixed\(8\)\}/);
   assert.match(renderer, /setpts=N\/\(\$\{frameRate\}\*TB\)/);
   assert.match(renderer, /fps=\$\{frameRate\}/);
+  assert.match(renderer, /tpad=stop_mode=clone:stop_duration=\$\{durationSeconds\}/);
   assert.match(renderer, /trim=duration=\$\{durationSeconds\}/);
   assert.match(renderer, /\.\.\.\(frameRate \? \["-r", String\(frameRate\)\] : \[\]\)/);
   assert.match(renderer, /scale=trunc\(iw\/2\)\*2:trunc\(ih\/2\)\*2/);
