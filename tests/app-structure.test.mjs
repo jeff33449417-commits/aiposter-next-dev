@@ -61,3 +61,53 @@ test("Cloudflare queue and D1 limits are configured", () => {
   assert.match(migration, /CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_one_active_export_per_user/);
   assert.match(migration, /status IN \('queued', 'processing', 'waiting_renderer'\)/);
 });
+
+test("commercial launch foundation is wired for customers, invites, support, and renderer pool", () => {
+  const worker = read("src/index.js");
+  const migration = read("migrations/0004_commercial_foundation.sql");
+
+  for (const table of [
+    "billing_plans",
+    "customer_accounts",
+    "customer_members",
+    "commercial_invite_codes",
+    "commerce_invite_requests",
+    "invoices",
+    "payments",
+    "export_workers",
+    "system_alerts",
+    "backup_runs"
+  ]) {
+    assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
+  }
+
+  assert.match(worker, /async function handleInviteRedemption/);
+  assert.match(worker, /async function handleCommerceInviteRequest/);
+  assert.match(worker, /async function requireCommerceToken/);
+  assert.match(worker, /async function timingSafeSecretEqual/);
+  assert.match(worker, /async function handleAdminCommercial/);
+  assert.match(worker, /async function handleAdminSupport/);
+  assert.match(worker, /async function handleAdminRenderers/);
+  assert.match(worker, /async function getRendererEndpoint/);
+  assert.match(worker, /\/api\/invites\/redeem/);
+  assert.match(worker, /\/api\/commerce\/invite-request/);
+  assert.match(worker, /\/api\/admin\/commercial/);
+  assert.match(worker, /\/api\/admin\/support/);
+  assert.match(worker, /\/api\/admin\/renderers/);
+  assert.match(worker, /\/api\/admin\/jobs\//);
+  assert.match(worker, /商用營運總覽/);
+});
+
+test("dy.com.tw commerce invite API keeps secrets server-side", () => {
+  const worker = read("src/index.js");
+  const wrangler = read("wrangler.jsonc");
+  const migration = read("migrations/0004_commercial_foundation.sql");
+
+  assert.match(worker, /DY_COMMERCE_API_TOKEN/);
+  assert.match(worker, /x-aiposter-commerce-token/);
+  assert.match(worker, /IDEMPOTENCY_KEY_REQUIRED/);
+  assert.match(worker, /commerce_invite_created/);
+  assert.match(worker, /aiposter\.jp 只建立邀請碼；邀請信由 dy\.com\.tw 發送給客戶。/);
+  assert.match(migration, /UNIQUE\(source, idempotency_key\)/);
+  assert.doesNotMatch(wrangler, /DY_COMMERCE_API_TOKEN/);
+});

@@ -88,7 +88,21 @@ const requiredSnippets = [
   ["export rate limit", "EXPORT_RATE_LIMIT_PER_MINUTE"],
   ["MP4 filename header", "filename*=UTF-8''"],
   ["renderer constant frame cadence", "fps=${frameRate}"],
-  ["one active export D1 index", "idx_jobs_one_active_export_per_user"]
+  ["one active export D1 index", "idx_jobs_one_active_export_per_user"],
+  ["commercial customer accounts", "customer_accounts"],
+  ["commercial invite codes", "commercial_invite_codes"],
+  ["commerce invite requests", "commerce_invite_requests"],
+  ["dy commerce invite endpoint", "/api/commerce/invite-request"],
+  ["dy commerce secret token", "DY_COMMERCE_API_TOKEN"],
+  ["dy commerce idempotency guard", "IDEMPOTENCY_KEY_REQUIRED"],
+  ["timing safe commerce auth", "async function timingSafeSecretEqual"],
+  ["renderer pool table", "export_workers"],
+  ["system alerts table", "system_alerts"],
+  ["backup run table", "backup_runs"],
+  ["invite redemption endpoint", "/api/invites/redeem"],
+  ["commercial admin endpoint", "/api/admin/commercial"],
+  ["support lookup endpoint", "/api/admin/support"],
+  ["renderer routing helper", "async function getRendererEndpoint"]
 ];
 
 // Frontend constants now live in public/js/app.js after modularization, so
@@ -98,7 +112,8 @@ const combined = [
   readFileSync(join(root, "public/js/app.js"), "utf8"),
   readFileSync(join(root, "renderer/server.js"), "utf8"),
   readFileSync(join(root, "src/index.js"), "utf8"),
-  readFileSync(join(root, "migrations/0003_export_queue_limits.sql"), "utf8")
+  readFileSync(join(root, "migrations/0003_export_queue_limits.sql"), "utf8"),
+  readFileSync(join(root, "migrations/0004_commercial_foundation.sql"), "utf8")
 ].join("\n");
 
 for (const [label, snippet] of requiredSnippets) {
