@@ -2258,15 +2258,32 @@ function pollExportJob(jobId) {
 }
 
 function loadExportImage(src) {
-    if (exportAssetCache.has(src)) return exportAssetCache.get(src);
-    const promise = new Promise((resolve, reject) => {
+    if (exportAssetCache.has(src)) return exportAssetCache.get(src).promise;
+    const entry = { image: null, promise: null };
+    entry.promise = new Promise((resolve, reject) => {
         const image = new Image();
-        image.onload = () => resolve(image);
+        image.onload = () => {
+            entry.image = image;
+            resolve(image);
+        };
         image.onerror = reject;
         image.src = src;
     });
-    exportAssetCache.set(src, promise);
-    return promise;
+    exportAssetCache.set(src, entry);
+    return entry.promise;
+}
+
+function loadedExportImage(src) {
+    return exportAssetCache.get(src)?.image || null;
+}
+
+async function prepareExportImages(clips) {
+    const urls = Array.from(new Set(
+        clips
+            .map((clip) => clip._imageUrl)
+            .filter(Boolean)
+    ));
+    await Promise.all(urls.map((url) => loadExportImage(url)));
 }
 
 const exportDelay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2424,10 +2441,11 @@ function fullMediaState() {
     };
 }
 
-async function drawImageClip(ctx, clip, layer, box, effect) {
+function drawImageClip(ctx, clip, layer, box, effect) {
     const state = clip._posterImageState || clip._imageEditState;
     if (!state || !clip._imageUrl) return;
-    const image = await loadExportImage(clip._imageUrl);
+    const image = loadedExportImage(clip._imageUrl);
+    if (!image) return;
     const crop = state.crop;
     const sx = image.naturalWidth * crop.left / 100;
     const sy = image.naturalHeight * crop.top / 100;
@@ -2534,7 +2552,7 @@ function drawTextClip(ctx, clip, layer, box, scaleY, effect) {
     ctx.restore();
 }
 
-async function drawExportFrame(ctx, canvas, elapsedSeconds, layout = createExportFrameLayout(canvas)) {
+function drawExportFrame(ctx, canvas, elapsedSeconds, layout = createExportFrameLayout(canvas)) {
     const { items, scaleY } = layout;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#fbf8ec';
@@ -2549,7 +2567,7 @@ async function drawExportFrame(ctx, canvas, elapsedSeconds, layout = createExpor
         if (clip.querySelector('.content-input')) {
             drawTextClip(ctx, clip, layer, box, scaleY, effect);
         } else if (clip._imageUrl) {
-            await drawImageClip(ctx, clip, layer, box, effect);
+            drawImageClip(ctx, clip, layer, box, effect);
         } else if (clip._videoUrl || layer.querySelector('.preview-media-element')) {
             drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds);
         }
@@ -2562,7 +2580,12 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
     canvas.width = canvasSize.width;
     canvas.height = canvasSize.height;
     const ctx = canvas.getContext('2d');
-    const stream = canvas.captureStream(frameRate);
+    let stream = canvas.captureStream(0);
+    let videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack?.requestFrame) {
+        stream = canvas.captureStream(frameRate);
+        videoTrack = stream.getVideoTracks()[0];
+    }
     const chunks = [];
     const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
         ? 'video/webm;codecs=vp9'
@@ -2579,7 +2602,9 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
         if (event.data.size) chunks.push(event.data);
     };
 
-    document.querySelectorAll('.timeline-clip').forEach(prepareClipPreviewLayer);
+    const clips = Array.from(document.querySelectorAll('.timeline-clip'));
+    clips.forEach(prepareClipPreviewLayer);
+    await prepareExportImages(clips);
     await prepareExportVideos();
     const layout = createExportFrameLayout(canvas);
     recorder.start(1000);
@@ -2589,17 +2614,25 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
     });
 
     await new Promise((resolve) => {
-        const render = async () => {
-            const rawElapsed = Math.min(TOTAL_SECONDS, (performance.now() - startTime) / 1000);
-            const elapsed = Math.round(rawElapsed * frameRate) / frameRate;
-            await drawExportFrame(ctx, canvas, elapsed, layout);
-            if (elapsed >= TOTAL_SECONDS) {
+        const totalFrames = Math.round(TOTAL_SECONDS * frameRate);
+        let frameIndex = 0;
+
+        const render = () => {
+            const elapsed = Math.min(TOTAL_SECONDS, frameIndex / frameRate);
+            drawExportFrame(ctx, canvas, elapsed, layout);
+            videoTrack?.requestFrame?.();
+
+            if (frameIndex >= totalFrames) {
                 recorder.stop();
                 resolve();
                 return;
             }
-            requestAnimationFrame(render);
+
+            frameIndex += 1;
+            const targetTime = startTime + (frameIndex * 1000 / frameRate);
+            window.setTimeout(render, Math.max(0, targetTime - performance.now()));
         };
+
         render();
     });
 

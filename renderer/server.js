@@ -38,6 +38,7 @@ function runFfmpeg(inputPath, outputPath, frameRate) {
     "-an",
     "-vf",
     `${frameRateFilter}scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+    ...(frameRate ? ["-r", String(frameRate)] : []),
     "-c:v",
     "libx265",
     "-tag:v",
