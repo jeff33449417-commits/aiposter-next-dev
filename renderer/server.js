@@ -26,8 +26,19 @@ function isAuthorized(request) {
   return request.headers.authorization === `Bearer ${rendererToken}`;
 }
 
-function runFfmpeg(inputPath, outputPath, frameRate) {
-  const frameRateFilter = frameRate ? `fps=${frameRate},` : "";
+function runFfmpeg(inputPath, outputPath, frameRate, durationSeconds) {
+  const filters = [];
+  if (frameRate) {
+    // Mobile browsers can stretch canvas capture timestamps when frame drawing
+    // falls behind. Rebuild the export timeline from frame order so the final
+    // MP4 stays at the requested cadence instead of inheriting wall-clock lag.
+    filters.push(`setpts=N/(${frameRate}*TB)`);
+    filters.push(`fps=${frameRate}`);
+  }
+  if (durationSeconds) {
+    filters.push(`trim=duration=${durationSeconds}`);
+  }
+  filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2");
   const args = [
     "-y",
     "-hide_banner",
@@ -37,7 +48,7 @@ function runFfmpeg(inputPath, outputPath, frameRate) {
     inputPath,
     "-an",
     "-vf",
-    `${frameRateFilter}scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+    filters.join(","),
     ...(frameRate ? ["-r", String(frameRate)] : []),
     "-c:v",
     "libx265",
@@ -100,7 +111,8 @@ async function handleRender(request, response) {
     }
 
     const frameRate = Number(request.headers["x-aiposter-frame-rate"] || 0) || null;
-    await runFfmpeg(inputPath, outputPath, frameRate);
+    const durationSeconds = Number(request.headers["x-aiposter-duration-seconds"] || 0) || null;
+    await runFfmpeg(inputPath, outputPath, frameRate, durationSeconds);
 
     const outputInfo = await stat(outputPath);
     response.writeHead(200, {
