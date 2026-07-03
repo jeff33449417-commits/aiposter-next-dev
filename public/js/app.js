@@ -2874,8 +2874,113 @@ async function executeArrangement() {
     }
 }
 
+async function loadUserProfile() {
+    try {
+        const response = await fetch('/api/me', { cache: 'no-store' });
+        const data = await parseApiJson(response);
+        if (!response.ok || !data.ok) return;
+
+        const badge = document.getElementById('userProfileBadge');
+        const emailSpan = document.getElementById('userEmail');
+        const planSpan = document.getElementById('userPlan');
+
+        if (badge && emailSpan && planSpan) {
+            emailSpan.textContent = data.user?.email || '未登入';
+            
+            const plan = data.user?.plan || 'free';
+            planSpan.textContent = plan;
+            planSpan.className = `user-plan-badge ${plan}`;
+            
+            badge.style.display = 'inline-flex';
+        }
+    } catch (error) {
+        console.warn('Unable to load user profile:', error);
+    }
+}
+
+function openRedeemModal() {
+    const modal = document.getElementById('redeemModal');
+    const input = document.getElementById('redeemCodeInput');
+    const msg = document.getElementById('redeemMessage');
+    if (modal) {
+        modal.style.display = 'flex';
+        modal.setAttribute('aria-hidden', 'false');
+    }
+    if (input) {
+        input.value = '';
+        input.focus();
+    }
+    if (msg) {
+        msg.textContent = '';
+        msg.className = 'modal-message';
+    }
+}
+
+function closeRedeemModal() {
+    const modal = document.getElementById('redeemModal');
+    if (modal) {
+        modal.style.display = 'none';
+        modal.setAttribute('aria-hidden', 'true');
+    }
+}
+
+async function submitRedeemCode() {
+    const input = document.getElementById('redeemCodeInput');
+    const msg = document.getElementById('redeemMessage');
+    const btn = document.getElementById('redeemSubmitBtn');
+    
+    const code = input?.value?.trim()?.toUpperCase() || '';
+    if (!code) {
+        if (msg) {
+            msg.textContent = '請輸入有效邀請碼。';
+            msg.className = 'modal-message error';
+        }
+        return;
+    }
+    
+    if (btn) btn.disabled = true;
+    if (msg) {
+        msg.textContent = '正在驗證序號...';
+        msg.className = 'modal-message';
+    }
+    
+    try {
+        const response = await fetch('/api/invites/redeem', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({ code })
+        });
+        const data = await parseApiJson(response);
+        if (!response.ok || !data.ok) {
+            throw new Error(data.message || '兌換失敗，請確認序號是否正確或已被使用。');
+        }
+        
+        if (msg) {
+            msg.textContent = '🎉 兌換成功！正在更新方案...';
+            msg.className = 'modal-message success';
+        }
+        
+        // Refresh user profile to show updated plan
+        await loadUserProfile();
+        
+        setTimeout(() => {
+            closeRedeemModal();
+        }, 1500);
+    } catch (error) {
+        if (msg) {
+            msg.textContent = error.message;
+            msg.className = 'modal-message error';
+        }
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
 initializeProductSelector();
 loadSecurityConfig();
+loadUserProfile();
 setupViewportGestures(document.getElementById('posterPreview'));
 setupViewportGestures(document.getElementById('imageEditorPreview'));
 window.addEventListener('resize', applyScreenPreviewSize);

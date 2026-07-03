@@ -8,7 +8,14 @@
 </head>
 <body>
     <main class="studio">
-        <h1 class="title">Ai Poster</h1>
+        <header class="studio-header">
+            <h1 class="title">Ai Poster</h1>
+            <div class="user-profile-badge" id="userProfileBadge" style="display:none">
+                <span class="user-email" id="userEmail">載入中...</span>
+                <span class="user-plan-badge" id="userPlan"></span>
+                <button class="redeem-trigger-btn" id="redeemTriggerBtn" onclick="openRedeemModal()">兌換序號</button>
+            </div>
+        </header>
 
         <section class="preview-frame" aria-label="廣告機預覽">
             <div class="poster-preview" id="posterPreview">
@@ -218,6 +225,26 @@
             </div>
         </div>
     </section>
+
+    <div class="modal-overlay" id="redeemModal" aria-hidden="true" style="display:none">
+        <div class="modal-card">
+            <div class="modal-card-header">
+                <h3>兌換商用邀請碼 / 體驗序號</h3>
+                <button class="modal-close-btn" onclick="closeRedeemModal()">×</button>
+            </div>
+            <div class="modal-card-body">
+                <p class="modal-tip">請輸入您的 VIP 邀請碼，兌換成功後將立即升級您的方案與每日輸出配額。</p>
+                <div class="modal-input-row">
+                    <input type="text" id="redeemCodeInput" placeholder="例如: BUSINESS_PRO_XYZ" autocomplete="off">
+                </div>
+                <div class="modal-message" id="redeemMessage"></div>
+            </div>
+            <div class="modal-card-footer">
+                <button class="modal-btn secondary" onclick="closeRedeemModal()">取消</button>
+                <button class="modal-btn primary" id="redeemSubmitBtn" onclick="submitRedeemCode()">立即兌換</button>
+            </div>
+        </div>
+    </div>
 
     <script src="/js/products.js"></script>
     <script src="/js/app.js"></script>
