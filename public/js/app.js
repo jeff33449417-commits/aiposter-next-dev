@@ -2577,7 +2577,8 @@ function drawExportFrame(ctx, canvas, elapsedSeconds, layout = createExportFrame
     }
 }
 
-async function syncAllVideosToTime(elapsedSeconds, layout) {
+async function syncAllVideosToTime(elapsedSeconds, layout, force = false) {
+    if (!force) return;
     const videoSeeks = [];
     for (const item of layout.items) {
         const { clip, layer, start, duration } = item;
@@ -2662,7 +2663,7 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
 
         const render = async () => {
             const elapsed = Math.min(TOTAL_SECONDS, frameIndex / frameRate);
-            await syncAllVideosToTime(elapsed, layout);
+            await syncAllVideosToTime(elapsed, layout, frameIndex === 0);
             drawExportFrame(ctx, canvas, elapsed, layout);
             videoTrack?.requestFrame?.();
 
