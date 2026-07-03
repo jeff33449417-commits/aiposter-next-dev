@@ -958,7 +958,10 @@ function enterCutMode() {
     const btn = document.getElementById('cutModeBtn');
     if (activeImageEdit && !activeImageEdit.pendingCropSelection) {
         activeImageEdit.pendingCropBaseState = imageEditStateFromControls();
-        activeImageEdit.pendingCropSelection = defaultCropSelection();
+        const layer = document.getElementById('editorImageLayer');
+        const preview = document.getElementById('imageEditorPreview');
+        const unconstrained = defaultCropSelection();
+        activeImageEdit.pendingCropSelection = clampCropSelectionToPreview(unconstrained, layer, preview);
         renderCropSelection(activeImageEdit.pendingCropSelection);
     }
     screen?.classList.add('crop-mode');
@@ -1287,6 +1290,29 @@ async function finishVideoEdit() {
     updatePreviewPlaceholder();
 }
 
+function clampCropSelectionToPreview(selection, layer, preview) {
+    if (!selection || !layer || !preview) return selection;
+    const layerRect = layer.getBoundingClientRect();
+    const previewRect = preview.getBoundingClientRect();
+
+    const pageLeft = layerRect.left + (selection.left / 100) * layerRect.width;
+    const pageTop = layerRect.top + (selection.top / 100) * layerRect.height;
+    const pageWidth = (selection.width / 100) * layerRect.width;
+    const pageHeight = (selection.height / 100) * layerRect.height;
+
+    const clampedPageLeft = clamp(pageLeft, previewRect.left, previewRect.right);
+    const clampedPageTop = clamp(pageTop, previewRect.top, previewRect.bottom);
+    const clampedPageRight = clamp(pageLeft + pageWidth, previewRect.left, previewRect.right);
+    const clampedPageBottom = clamp(pageTop + pageHeight, previewRect.top, previewRect.bottom);
+
+    return {
+        left: clamp(((clampedPageLeft - layerRect.left) / Math.max(1, layerRect.width)) * 100, 0, 100),
+        top: clamp(((clampedPageTop - layerRect.top) / Math.max(1, layerRect.height)) * 100, 0, 100),
+        width: clamp(((clampedPageRight - clampedPageLeft) / Math.max(1, layerRect.width)) * 100, 1, 100),
+        height: clamp(((clampedPageBottom - clampedPageTop) / Math.max(1, layerRect.height)) * 100, 1, 100)
+    };
+}
+
 function setupImageEditorInteractions() {
     const layer = document.getElementById('editorImageLayer');
     const preview = document.getElementById('imageEditorPreview');
@@ -1351,18 +1377,18 @@ function setupImageEditorInteractions() {
         const next = JSON.parse(JSON.stringify(state.editState));
 
         if (state.mode === 'move') {
-            next.box.left = clamp(state.editState.box.left + dxPercent, 0, 100 - state.editState.box.width);
-            next.box.top = clamp(state.editState.box.top + dyPercent, 0, 100 - state.editState.box.height);
+            next.box.left = clamp(state.editState.box.left + dxPercent, -150, 150);
+            next.box.top = clamp(state.editState.box.top + dyPercent, -150, 150);
         } else if (state.mode === 'corner') {
             const point = next.corners[state.corner];
             point.x = clamp(state.editState.corners[state.corner].x + dxPercent, 0, 100);
             point.y = clamp(state.editState.corners[state.corner].y + dyPercent, 0, 100);
         } else if (state.mode === 'resize') {
             if (state.resize.includes('e')) {
-                next.box.width = clamp(state.editState.box.width + dxPercent, state.minBoxSize, 100 - state.editState.box.left);
+                next.box.width = clamp(state.editState.box.width + dxPercent, state.minBoxSize, 300);
             }
             if (state.resize.includes('s')) {
-                next.box.height = clamp(state.editState.box.height + dyPercent, state.minBoxSize, 100 - state.editState.box.top);
+                next.box.height = clamp(state.editState.box.height + dyPercent, state.minBoxSize, 300);
             }
         } else if (state.mode === 'crop') {
             const cropDeltaX = ((event.clientX - state.pointerX) / Math.max(1, state.editState.box.width / 100 * state.previewWidth)) * 100;
@@ -1380,20 +1406,27 @@ function setupImageEditorInteractions() {
                 next.crop.bottom = clamp(state.editState.crop.bottom - cropDeltaY, 0, 90 - state.editState.crop.top);
             }
         } else if (state.mode === 'crop-select') {
-            const currentX = clamp(((event.clientX - state.layerLeft) / state.layerWidth) * 100, 0, 100);
-            const currentY = clamp(((event.clientY - state.layerTop) / state.layerHeight) * 100, 0, 100);
+            const previewRect = preview.getBoundingClientRect();
+            const clientXClamped = clamp(event.clientX, previewRect.left, previewRect.right);
+            const clientYClamped = clamp(event.clientY, previewRect.top, previewRect.bottom);
+
+            const currentX = clamp(((clientXClamped - state.layerLeft) / state.layerWidth) * 100, 0, 100);
+            const currentY = clamp(((clientYClamped - state.layerTop) / state.layerHeight) * 100, 0, 100);
             const left = Math.min(state.selectionStartX, currentX);
             const top = Math.min(state.selectionStartY, currentY);
             const width = Math.abs(currentX - state.selectionStartX);
             const height = Math.abs(currentY - state.selectionStartY);
-            state.selection = { left, top, width, height };
+
+            const unconstrainedSelection = { left, top, width, height };
+            state.selection = clampCropSelectionToPreview(unconstrainedSelection, layer, preview);
             renderCropSelection(state.selection);
             event.preventDefault();
             return;
         } else if (state.mode === 'crop-edge') {
             const edgeDeltaX = ((event.clientX - state.pointerX) / state.layerWidth) * 100;
             const edgeDeltaY = ((event.clientY - state.pointerY) / state.layerHeight) * 100;
-            state.selection = adjustedCropSelection(state.edgeSelection, state.cropEdge, edgeDeltaX, edgeDeltaY);
+            const unconstrainedSelection = adjustedCropSelection(state.edgeSelection, state.cropEdge, edgeDeltaX, edgeDeltaY);
+            state.selection = clampCropSelectionToPreview(unconstrainedSelection, layer, preview);
             activeImageEdit.pendingCropSelection = state.selection;
             renderCropSelection(state.selection);
             event.preventDefault();
