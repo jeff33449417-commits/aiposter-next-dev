@@ -1733,7 +1733,116 @@ async function handleInviteRedemption(request, env, user) {
   }, { status: 201 });
 }
 
-async function handleCommerceInviteRequest(request, env) {
+function commerceEscapeHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+async function sendCommerceNotificationEmail(env, body, inviteEmail, customerName, redeemUrl) {
+  const recipient = (env.COMMERCE_NOTIFICATION_EMAIL || "support@dy.com.tw").trim();
+  const senderEmail = (env.OWNER_EMAIL || "noreply@aiposter.jp").trim();
+  
+  let productsHtml = "";
+  if (body.products && Array.isArray(body.products)) {
+    productsHtml = "<ul style='margin: 0; padding-left: 20px;'>" + body.products.map(p => {
+      const name = p.name || p.title || "未知商品";
+      const qty = p.quantity || p.qty || 1;
+      return `<li style='margin-bottom: 4px;'>${commerceEscapeHtml(name)} x ${commerceEscapeHtml(String(qty))}</li>`;
+    }).join("") + "</ul>";
+  } else if (body.products) {
+    productsHtml = `<p style='margin: 0;'>${commerceEscapeHtml(String(body.products))}</p>`;
+  } else {
+    productsHtml = "<p style='margin: 0;'>無購買商品資訊</p>";
+  }
+
+  // Generate mailto link parameters
+  const mailtoSubject = encodeURIComponent("歡迎使用 AI Poster 廣告設計系統試用版！");
+  const mailtoBody = encodeURIComponent(`親愛的 ${customerName} 您好：
+
+感謝您的購物與加入會員！以下是為您開通的 AI Poster 廣告設計系統試用版登入資訊：
+
+• 登入網址：${redeemUrl}
+• 登入方式：點擊上方網址，即可直接進入編輯器開始設計您的專屬海報與廣告影片！
+
+祝您設計順利！
+AI Poster 團隊 敬上`);
+
+  const mailtoUrl = `mailto:${encodeURIComponent(inviteEmail)}?subject=${mailtoSubject}&body=${mailtoBody}`;
+
+  const htmlContent = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; padding: 24px; border-radius: 8px; background-color: #ffffff;">
+      <h2 style="color: #1e3a8a; margin-top: 0; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px;">[AI Poster] 新增會員購物與試用開通通知</h2>
+      <p>系統已收到來自 dy.com.tw 購物網的會員購買與試用開通請求。以下為詳細資訊：</p>
+      
+      <div style="background-color: #f8fafc; border-left: 4px solid #3b82f6; padding: 16px; margin: 18px 0; border-radius: 4px;">
+        <h4 style="margin: 0 0 8px 0; color: #1e293b; font-size: 15px;">👤 客戶基本資料</h4>
+        <p style="margin: 4px 0; font-size: 14px;"><strong>客戶姓名:</strong> ${commerceEscapeHtml(customerName)}</p>
+        <p style="margin: 4px 0; font-size: 14px;"><strong>客戶 Email:</strong> <a href="mailto:${inviteEmail}" style="color: #2563eb; text-decoration: none;">${commerceEscapeHtml(inviteEmail)}</a></p>
+      </div>
+
+      <div style="background-color: #f8fafc; border-left: 4px solid #64748b; padding: 16px; margin: 18px 0; border-radius: 4px;">
+        <h4 style="margin: 0 0 8px 0; color: #1e293b; font-size: 15px;">🛍️ 購買明細</h4>
+        ${productsHtml}
+      </div>
+
+      <div style="background-color: #f0fdf4; border-left: 4px solid #22c55e; padding: 16px; margin: 18px 0; border-radius: 4px;">
+        <h4 style="margin: 0 0 8px 0; color: #15803d; font-size: 15px;">🔑 系統試用版資訊</h4>
+        <p style="margin: 4px 0; font-size: 14px;"><strong>登入連結:</strong> <a href="${redeemUrl}" style="color: #16a34a; font-weight: bold; word-break: break-all;">${redeemUrl}</a></p>
+      </div>
+
+      <div style="text-align: center; margin-top: 32px; margin-bottom: 12px;">
+        <a href="${mailtoUrl}" style="display: inline-block; padding: 14px 28px; background-color: #2563eb; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px; box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.2);">
+          ✉️ 一鍵發送試用信給客戶
+        </a>
+      </div>
+      <p style="color: #64748b; font-size: 12px; text-align: center; margin-top: 0;">
+        (點擊上方按鈕即可快速叫起郵件軟體，自動帶入客戶收件人與登入說明範本)
+      </p>
+    </div>
+  `;
+
+  try {
+    const res = await fetch("https://api.mailchannels.net/tx/v1/send", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        personalizations: [
+          {
+            to: [{ email: recipient, name: "DY Support" }]
+          }
+        ],
+        from: {
+          email: senderEmail,
+          name: "AI Poster System"
+        },
+        subject: `[AI Poster] 購物會員試用開通通知 - ${customerName}`,
+        content: [
+          {
+            type: "text/html",
+            value: htmlContent
+          }
+        ]
+      })
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn("Mailchannels send failed:", errText);
+    } else {
+      console.log(`Notification email successfully sent to ${recipient} for client ${inviteEmail}`);
+    }
+  } catch (error) {
+    console.warn("Failed to send notification email via Mailchannels:", error);
+  }
+}
+
+async function handleCommerceInviteRequest(request, env, ctx) {
   const corsHeaders = commerceCorsHeaders(request, env);
 
   if (request.method === "OPTIONS") {
@@ -2009,6 +2118,13 @@ async function handleCommerceInviteRequest(request, env) {
     plan,
     requestId
   }));
+
+  const notifyPromise = sendCommerceNotificationEmail(env, body, inviteEmail, customerName, responsePayload.invite.redeemUrl);
+  if (ctx && ctx.waitUntil) {
+    ctx.waitUntil(notifyPromise);
+  } else {
+    await notifyPromise;
+  }
 
   return json({
     ok: true,
@@ -3528,7 +3644,7 @@ export default {
     }
 
     if (url.pathname === "/api/commerce/invite-request") {
-      return handleCommerceInviteRequest(request, env);
+      return handleCommerceInviteRequest(request, env, ctx);
     }
 
     if (url.pathname === "/api/invites/redeem") {
