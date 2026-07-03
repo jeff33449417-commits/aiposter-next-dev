@@ -12,7 +12,10 @@ test("frontend keeps the current MP4 export contract", () => {
   assert.match(app, /const EXPORT_FRAME_RATE = 60;/);
   assert.match(app, /const EXPORT_MAX_LONG_SIDE = 960;/);
   assert.match(app, /async function downloadJobOutput/);
-  assert.match(app, /new Blob\(\[blob\], \{ type: 'video\/mp4' \}\)/);
+  assert.match(app, /const downloadLink = document\.createElement\('a'\)/);
+  assert.match(app, /downloadLink\.href = outputUrl/);
+  assert.match(app, /downloadLink\.download = filename/);
+  assert.doesNotMatch(app, /new Blob\(\[blob\], \{ type: 'video\/mp4' \}\)/);
   assert.match(app, /下載 H\.265 MP4/);
   assert.match(app, /const TURNSTILE_TOKEN_TIMEOUT_MS = 10000;/);
   assert.match(app, /execution: 'execute'/);

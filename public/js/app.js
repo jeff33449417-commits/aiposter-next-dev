@@ -2165,15 +2165,18 @@ async function downloadJobOutput(jobId) {
     const job = exportJobs.get(jobId);
     const outputUrl = jobOutputUrl(job);
     if (!outputUrl) return;
+    const filename = jobOutputFilename(job).replace(/\.html$/i, '').replace(/\.mp4$/i, '') + '.mp4';
     try {
-        const response = await fetch(outputUrl, { cache: 'no-store' });
-        if (!response.ok) {
-            throw new Error('MP4 檔案還不能下載，請稍後再試。');
-        }
-        const blob = await response.blob();
-        const mp4Blob = blob.type === 'video/mp4' ? blob : new Blob([blob], { type: 'video/mp4' });
-        downloadBlob(mp4Blob, jobOutputFilename(job).replace(/\.html$/i, '').replace(/\.mp4$/i, '') + '.mp4');
+        const downloadLink = document.createElement('a');
+        downloadLink.href = outputUrl;
+        downloadLink.download = filename;
+        downloadLink.rel = 'noopener';
+        downloadLink.style.display = 'none';
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        downloadLink.remove();
     } catch (error) {
+        window.location.assign(outputUrl);
         upsertExportJob({
             ...job,
             errorMessage: error.message || '下載失敗，請稍後再試。'
