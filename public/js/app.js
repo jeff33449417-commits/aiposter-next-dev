@@ -2087,6 +2087,8 @@ setupImageEditorInteractions();
 const exportAssetCache = new Map();
 const exportJobs = new Map();
 const exportJobPollers = new Map();
+let activeJobCountdownSeconds = null;
+let activeJobCountdownInterval = null;
 
 function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
@@ -2130,9 +2132,13 @@ function exportJobMessage(job) {
 
 function formatQueueEta(seconds) {
     const value = Number(seconds || 0);
-    if (!Number.isFinite(value) || value <= 0) return '';
-    const minutes = Math.max(1, Math.ceil(value / 60));
-    return `約 ${minutes} 分鐘`;
+    if (!Number.isFinite(value) || value <= 0) return '即將完成';
+    if (value >= 60) {
+        const m = Math.floor(value / 60);
+        const s = value % 60;
+        return `約 ${m} 分 ${s} 秒`;
+    }
+    return `約 ${value} 秒`;
 }
 
 function exportQueueMessage(job) {
@@ -2190,15 +2196,74 @@ function renderExportJobs() {
 
     const jobs = Array.from(exportJobs.values()).slice(0, 1);
     panel.classList.toggle('has-jobs', jobs.length > 0);
-    panel.innerHTML = jobs.map((job) => `
-        <article class="export-job">
-            <span class="export-status ${escapeText(job.status)}">${escapeText(exportStatusLabel(job.status))}</span>
-            ${exportQueueMessage(job) ? `<span class="export-job-meta">${escapeText(exportQueueMessage(job))}</span>` : ''}
-            ${exportJobMessage(job) ? `<span class="export-job-meta">${escapeText(exportJobMessage(job))}</span>` : ''}
-            ${jobOutputUrl(job) ? `<button class="export-link" type="button" onclick="downloadJobOutput('${escapeText(job.id)}')">下載 H.265 MP4</button>` : ''}
-            ${jobOutputUrl(job) ? `<span class="download-hint">手機下載後請看 Safari 下載項目，或「檔案」App 的下載項目。</span>` : ''}
-        </article>
-    `).join('');
+    panel.innerHTML = jobs.map((job) => {
+        const title = job.status === 'completed' 
+            ? '您的廣告影片已製作完成！' 
+            : job.status === 'failed' 
+                ? '影片輸出失敗' 
+                : '系統正在為您處理廣告影片...';
+                
+        const statusLabel = exportStatusLabel(job.status);
+        const hasQueue = job.queue && ['queued', 'processing', 'waiting_renderer'].includes(job.status);
+        const isCompleted = job.status === 'completed';
+        const isFailed = job.status === 'failed';
+        
+        let positionText = '';
+        let etaText = '';
+        let progressPercent = 0;
+        
+        if (hasQueue) {
+            const position = Number(job.queue.position || 0);
+            if (job.status === 'processing') {
+                positionText = '正在為您進行 H.265 60fps 硬體加速轉檔...';
+                progressPercent = 65;
+            } else if (position > 0) {
+                positionText = `排隊第 ${position} 位 (前面有 ${position - 1} 個任務等待中)`;
+                progressPercent = Math.max(10, Math.min(40, 50 - position * 10));
+            } else {
+                positionText = '正在佇列中等待...';
+                progressPercent = 10;
+            }
+            
+            etaText = formatQueueEta(activeJobCountdownSeconds !== null ? activeJobCountdownSeconds : Number(job.queue.estimatedSeconds));
+        }
+
+        return `
+            <article class="export-job">
+                <div class="export-job-header">
+                    <span class="export-job-title">${escapeText(title)}</span>
+                    <span class="export-status-badge ${escapeText(job.status)}">${escapeText(statusLabel)}</span>
+                </div>
+                
+                ${hasQueue ? `
+                <div class="export-job-progress-wrapper">
+                    <div class="export-job-progress-bar">
+                        <div class="export-job-progress-fill ${escapeText(job.status)}" style="width: ${progressPercent}%"></div>
+                    </div>
+                </div>
+                <div class="export-job-details">
+                    <span class="export-job-position">${escapeText(positionText)}</span>
+                    <span class="export-job-eta">🕒 剩餘時間：<span class="eta-countdown">${escapeText(etaText)}</span></span>
+                </div>
+                ` : ''}
+                
+                ${isCompleted ? `
+                <div class="export-job-success-actions">
+                    <button class="export-link-btn" type="button" onclick="downloadJobOutput('${escapeText(job.id)}')">
+                        📥 下載 H.265 MP4
+                    </button>
+                    <span class="download-hint">手機下載後請至 Safari 下載項目或「檔案」App 查看。</span>
+                </div>
+                ` : ''}
+                
+                ${isFailed ? `
+                <div class="export-job-error">
+                    <strong>錯誤原因：</strong>${escapeText(exportJobMessage(job)) || '未知錯誤，請重新提交。'}
+                </div>
+                ` : ''}
+            </article>
+        `;
+    }).join('');
 }
 
 function upsertExportJob(job) {
@@ -2208,6 +2273,39 @@ function upsertExportJob(job) {
     const ordered = Array.from(exportJobs.values()).slice(-1);
     exportJobs.clear();
     ordered.reverse().forEach((item) => exportJobs.set(item.id, item));
+    
+    // Manage active countdown timer
+    const activeJob = ordered[0];
+    if (activeJob && ['queued', 'processing', 'waiting_renderer'].includes(activeJob.status)) {
+        const queueSeconds = activeJob.queue?.estimatedSeconds;
+        if (queueSeconds !== undefined && queueSeconds !== null) {
+            if (activeJobCountdownSeconds === null || Math.abs(activeJobCountdownSeconds - Number(queueSeconds)) > 5) {
+                activeJobCountdownSeconds = Number(queueSeconds);
+            }
+            if (!activeJobCountdownInterval) {
+                activeJobCountdownInterval = setInterval(() => {
+                    if (activeJobCountdownSeconds !== null && activeJobCountdownSeconds > 0) {
+                        activeJobCountdownSeconds--;
+                        const etaSpan = document.querySelector('.eta-countdown');
+                        if (etaSpan) {
+                            etaSpan.textContent = formatQueueEta(activeJobCountdownSeconds);
+                        }
+                    } else {
+                        clearInterval(activeJobCountdownInterval);
+                        activeJobCountdownInterval = null;
+                        activeJobCountdownSeconds = null;
+                    }
+                }, 1000);
+            }
+        }
+    } else {
+        if (activeJobCountdownInterval) {
+            clearInterval(activeJobCountdownInterval);
+            activeJobCountdownInterval = null;
+        }
+        activeJobCountdownSeconds = null;
+    }
+
     renderExportJobs();
 }
 
