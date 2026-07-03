@@ -915,7 +915,7 @@ async function handleExportJob(request, env, user, ctx) {
     }
 
     const maxVideoBytes = envNumber(env, "MAX_VIDEO_UPLOAD_MB", DEFAULT_VIDEO_UPLOAD_MB) * 1024 * 1024;
-    const isSystemPreview = filenameFromR2Key(sourceAsset.r2_key) === "ai_poster_preview.webm";
+    const isSystemPreview = /^ai_poster_preview\.(webm|mp4|mov)$/i.test(filenameFromR2Key(sourceAsset.r2_key));
     if ((sourceAsset.mime_type || "").startsWith("video/") && Number(sourceAsset.size_bytes || 0) > maxVideoBytes && !isSystemPreview) {
       return json({
         ok: false,
@@ -1290,7 +1290,7 @@ async function handleAssets(request, env, user) {
     }
 
     const maxVideoBytes = envNumber(env, "MAX_VIDEO_UPLOAD_MB", DEFAULT_VIDEO_UPLOAD_MB) * 1024 * 1024;
-    const isSystemPreview = file.name === "ai_poster_preview.webm";
+    const isSystemPreview = /^ai_poster_preview\.(webm|mp4|mov)$/i.test(file.name);
     if ((file.type || "").startsWith("video/") && file.size > maxVideoBytes && !isSystemPreview) {
       return json({
         ok: false,

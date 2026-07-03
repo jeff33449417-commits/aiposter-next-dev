@@ -2966,9 +2966,22 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
         videoTrack = stream.getVideoTracks()[0];
     }
     const chunks = [];
-    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-        ? 'video/webm;codecs=vp9'
-        : 'video/webm';
+    
+    let mimeType = 'video/webm';
+    if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+            mimeType = 'video/webm;codecs=vp9';
+        } else if (MediaRecorder.isTypeSupported('video/webm')) {
+            mimeType = 'video/webm';
+        } else if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1')) {
+            mimeType = 'video/mp4;codecs=avc1';
+        } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+            mimeType = 'video/mp4';
+        } else if (MediaRecorder.isTypeSupported('video/quicktime')) {
+            mimeType = 'video/quicktime';
+        }
+    }
+
     // Scale the recording bitrate with resolution so larger frames aren't
     // starved, but cap it so the intermediate WebM stays under the renderer's
     // video upload limit (MAX_VIDEO_UPLOAD_MB = 10MB; ~4Mbps * 15s ≈ 7.5MB).
@@ -3019,7 +3032,11 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
     await stopped;
     endExportVideos();
 
-    return new Blob(chunks, { type: 'video/webm' });
+    // new Blob(chunks, { type: 'video/webm' })
+    return {
+        blob: new Blob(chunks, { type: mimeType }),
+        mimeType
+    };
 }
 
 async function executeArrangement() {
@@ -3040,9 +3057,14 @@ async function executeArrangement() {
             });
             return;
         }
-        const webmBlob = await recordPreviewWebM(outputFrameRate);
+        const recording = await recordPreviewWebM(outputFrameRate);
+        const { blob, mimeType } = recording;
+        let ext = 'webm';
+        if (mimeType.includes('mp4')) ext = 'mp4';
+        else if (mimeType.includes('quicktime')) ext = 'mov';
+
         upsertExportJob({ id: 'current-export', status: 'uploading' });
-        const sourceAsset = await uploadAssetToCloud(webmBlob, 'ai_poster_preview.webm');
+        const sourceAsset = await uploadAssetToCloud(blob, `ai_poster_preview.${ext}`);
         upsertExportJob({ id: 'current-export', status: 'creating_job' });
         const canvasSize = exportCanvasSize(product);
         const token = await turnstileToken('export');
