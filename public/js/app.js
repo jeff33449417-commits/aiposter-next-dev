@@ -2176,7 +2176,7 @@ function jobOutputUrl(job) {
 }
 
 function jobOutputFilename(job) {
-    return job?.outputFilename || `${job?.id || 'ai_poster'}_h265.mp4`;
+    return job?.outputFilename || `${job?.id || 'ai_poster'}_60frame_h265.mp4`;
 }
 
 async function downloadJobOutput(jobId) {

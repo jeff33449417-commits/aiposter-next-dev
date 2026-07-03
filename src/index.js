@@ -271,7 +271,7 @@ function serializeJob(row) {
     input,
     sourceAssetUrl: input.settings?.sourceAssetUrl || null,
     outputUrl: outputUrlForJob(row),
-    outputFilename: row?.output_r2_key ? `${row.id}_h265.mp4` : null
+    outputFilename: row?.output_r2_key ? `${row.id}_60frame_h265.mp4` : null
   };
 }
 
@@ -2422,7 +2422,7 @@ async function handleAdminJobOutput(request, env, user, jobId) {
     }, { status: 404 });
   }
 
-  const filename = `${job.id}_h265.mp4`;
+  const filename = `${job.id}_60frame_h265.mp4`;
   return new Response(object.body, {
     headers: {
       "content-type": "video/mp4",
