@@ -618,19 +618,47 @@ async function exportQueueInfo(env, job) {
     return null;
   }
 
-  const ahead = await env.DB.prepare(
-    `SELECT COUNT(*) AS count
+  const activeJobs = await env.DB.prepare(
+    `SELECT id, status, created_at, updated_at
      FROM jobs
      WHERE type = 'export_h265'
        AND status IN (${activeStatusPlaceholders()})
-       AND datetime(created_at) < datetime(?)`
-  ).bind(...ACTIVE_EXPORT_STATUSES, job.created_at).first();
-  const aheadCount = Number(ahead?.count || 0);
+     ORDER BY created_at ASC`
+  ).bind(...ACTIVE_EXPORT_STATUSES).all();
+
+  const jobsList = activeJobs.results || [];
+  const currentIndex = jobsList.findIndex(j => j.id === job.id);
+  
+  if (currentIndex === -1) {
+    const secondsPerJob = envNumber(env, "EXPORT_SECONDS_PER_JOB", DEFAULT_EXPORT_SECONDS_PER_JOB);
+    return {
+      position: 1,
+      ahead: 0,
+      estimatedSeconds: secondsPerJob
+    };
+  }
+
   const secondsPerJob = envNumber(env, "EXPORT_SECONDS_PER_JOB", DEFAULT_EXPORT_SECONDS_PER_JOB);
+  let totalEstimatedRemaining = 0;
+
+  for (let i = 0; i <= currentIndex; i++) {
+    const j = jobsList[i];
+    if (j.status === 'processing') {
+      const updatedAtStr = j.updated_at ? j.updated_at.replace(' ', 'T') + 'Z' : new Date().toISOString();
+      const updatedAtMs = new Date(updatedAtStr).getTime();
+      const nowMs = Date.now();
+      const elapsedSeconds = Math.max(0, (nowMs - updatedAtMs) / 1000);
+      const remainingSeconds = Math.max(10, secondsPerJob - elapsedSeconds);
+      totalEstimatedRemaining += remainingSeconds;
+    } else {
+      totalEstimatedRemaining += secondsPerJob;
+    }
+  }
+
   return {
-    position: aheadCount + 1,
-    ahead: aheadCount,
-    estimatedSeconds: Math.max(secondsPerJob, (aheadCount + 1) * secondsPerJob)
+    position: currentIndex + 1,
+    ahead: currentIndex,
+    estimatedSeconds: Math.max(10, Math.round(totalEstimatedRemaining))
   };
 }
 
