@@ -2577,6 +2577,46 @@ function drawExportFrame(ctx, canvas, elapsedSeconds, layout = createExportFrame
     }
 }
 
+async function syncAllVideosToTime(elapsedSeconds, layout) {
+    const videoSeeks = [];
+    for (const item of layout.items) {
+        const { clip, layer, start, duration } = item;
+        if (elapsedSeconds < start || elapsedSeconds > start + duration) {
+            const video = clip._exportVideo || layer.querySelector('.preview-media-element');
+            if (video && !video.paused) {
+                try { video.pause(); } catch (e) {}
+            }
+            continue;
+        }
+        if (clip._videoUrl || layer.querySelector('.preview-media-element')) {
+            const video = clip._exportVideo || layer.querySelector('.preview-media-element');
+            if (!video || !Number.isFinite(video.duration) || video.duration <= 0) continue;
+            const target = Math.max(0, elapsedSeconds - start) % video.duration;
+            if (Math.abs(video.currentTime - target) > 0.001) {
+                videoSeeks.push(new Promise((resolve) => {
+                    let resolved = false;
+                    const onSeeked = () => {
+                        if (resolved) return;
+                        resolved = true;
+                        video.removeEventListener('seeked', onSeeked);
+                        resolve();
+                    };
+                    video.addEventListener('seeked', onSeeked);
+                    setTimeout(onSeeked, 100);
+                    try {
+                        video.currentTime = target;
+                    } catch (error) {
+                        onSeeked();
+                    }
+                }));
+            }
+        }
+    }
+    if (videoSeeks.length > 0) {
+        await Promise.all(videoSeeks);
+    }
+}
+
 async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
     const canvas = document.createElement('canvas');
     const canvasSize = exportCanvasSize();
@@ -2620,8 +2660,9 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
         const totalFrames = Math.round(TOTAL_SECONDS * frameRate);
         let frameIndex = 0;
 
-        const render = () => {
+        const render = async () => {
             const elapsed = Math.min(TOTAL_SECONDS, frameIndex / frameRate);
+            await syncAllVideosToTime(elapsed, layout);
             drawExportFrame(ctx, canvas, elapsed, layout);
             videoTrack?.requestFrame?.();
 

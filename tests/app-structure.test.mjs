@@ -43,7 +43,7 @@ test("renderer normalizes MP4 output cadence", () => {
   assert.match(renderer, /tpad=stop_mode=clone:stop_duration=\$\{durationSeconds\}/);
   assert.match(renderer, /trim=duration=\$\{durationSeconds\}/);
   assert.match(renderer, /\.\.\.\(frameRate \? \["-r", String\(frameRate\)\] : \[\]\)/);
-  assert.match(renderer, /scale=trunc\(iw\/2\)\*2:trunc\(ih\/2\)\*2/);
+  assert.match(renderer, /scale=trunc\(iw\/16\)\*16:trunc\(ih\/16\)\*16/);
 });
 
 test("backend enforces MP4 queue safeguards", () => {

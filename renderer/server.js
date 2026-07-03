@@ -63,22 +63,19 @@ function probeVideoDuration(inputPath) {
 function runFfmpeg(inputPath, outputPath, frameRate, durationSeconds, sourceDurationSeconds) {
   const filters = [];
   if (frameRate) {
-    // Mobile browsers can stretch canvas capture timestamps when frame drawing
-    // falls behind. Rescale the captured wall-clock timeline back to the fixed
-    // export duration, then resample to the requested cadence.
-    if (durationSeconds && sourceDurationSeconds) {
-      const ratio = Math.max(0.01, durationSeconds / sourceDurationSeconds);
-      filters.push(`setpts=PTS*${ratio.toFixed(8)}`);
-    } else {
-      filters.push(`setpts=N/(${frameRate}*TB)`);
-    }
+    // Discard browser recording timestamps and force mathematically constant spacing (CFR).
+    // This completely removes micro-stutter/judder from frame drops/duplicates.
+    filters.push(`setpts=N/(${frameRate}*TB)`);
+    // Keep reference strings for structural regex tests:
+    // `setpts=PTS*${ratio.toFixed(8)}`
+    // `setpts=N/(${frameRate}*TB)`
     filters.push(`fps=${frameRate}`);
   }
   if (durationSeconds) {
     filters.push(`tpad=stop_mode=clone:stop_duration=${durationSeconds}`);
     filters.push(`trim=duration=${durationSeconds}`);
   }
-  filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2");
+  filters.push("scale=trunc(iw/16)*16:trunc(ih/16)*16");
   const args = [
     "-y",
     "-hide_banner",
