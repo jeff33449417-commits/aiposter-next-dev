@@ -1,7 +1,7 @@
 const TOTAL_SECONDS = 15;
 const MIN_DURATION_SECONDS = 1;
 const PRODUCT_BY_ID = new Map(AI_POSTER_PRODUCTS.map((product) => [product.id, product]));
-let selectedProductId = 'p5';
+let selectedProductId = 'p4';
 let dynamicMediaId = 0;
 let textLayerId = 0;
 let mediaLayerId = 0;
