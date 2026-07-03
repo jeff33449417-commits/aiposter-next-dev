@@ -874,7 +874,7 @@ async function handleExportJob(request, env, user, ctx) {
   const sourceAssetId = body.settings?.sourceAssetId;
   if (sourceAssetId) {
     const sourceAsset = await env.DB.prepare(
-      `SELECT id, mime_type, size_bytes FROM assets
+      `SELECT id, r2_key, mime_type, size_bytes FROM assets
        WHERE id = ? AND owner_user_id = ? AND deleted_at IS NULL`
     ).bind(sourceAssetId, user.id).first();
 
@@ -887,7 +887,8 @@ async function handleExportJob(request, env, user, ctx) {
     }
 
     const maxVideoBytes = envNumber(env, "MAX_VIDEO_UPLOAD_MB", DEFAULT_VIDEO_UPLOAD_MB) * 1024 * 1024;
-    if ((sourceAsset.mime_type || "").startsWith("video/") && Number(sourceAsset.size_bytes || 0) > maxVideoBytes) {
+    const isSystemPreview = filenameFromR2Key(sourceAsset.r2_key) === "ai_poster_preview.webm";
+    if ((sourceAsset.mime_type || "").startsWith("video/") && Number(sourceAsset.size_bytes || 0) > maxVideoBytes && !isSystemPreview) {
       return json({
         ok: false,
         code: "EXPORT_SOURCE_TOO_LARGE",
@@ -1261,7 +1262,8 @@ async function handleAssets(request, env, user) {
     }
 
     const maxVideoBytes = envNumber(env, "MAX_VIDEO_UPLOAD_MB", DEFAULT_VIDEO_UPLOAD_MB) * 1024 * 1024;
-    if ((file.type || "").startsWith("video/") && file.size > maxVideoBytes) {
+    const isSystemPreview = file.name === "ai_poster_preview.webm";
+    if ((file.type || "").startsWith("video/") && file.size > maxVideoBytes && !isSystemPreview) {
       return json({
         ok: false,
         code: "VIDEO_UPLOAD_TOO_LARGE",
