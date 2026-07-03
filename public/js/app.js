@@ -2471,6 +2471,13 @@ function syncExportVideoTime(video, clip, elapsedSeconds) {
     if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
     const start = parseFloat(clip.dataset.start) || 0;
     const target = Math.max(0, elapsedSeconds - start) % video.duration;
+
+    // During export, we rely entirely on syncAllVideosToTime's precise paused seeking.
+    // We do NOT want to seek or play here because that would conflict with the frame-by-frame loop!
+    if (video === clip._exportVideo) {
+        return;
+    }
+
     if (Math.abs(video.currentTime - target) > 0.3) {
         try { video.currentTime = target; } catch (error) {}
     }
@@ -2592,6 +2599,12 @@ async function syncAllVideosToTime(elapsedSeconds, layout, force = false) {
         if (clip._videoUrl || layer.querySelector('.preview-media-element')) {
             const video = clip._exportVideo || layer.querySelector('.preview-media-element');
             if (!video || !Number.isFinite(video.duration) || video.duration <= 0) continue;
+            
+            // Force pause the video during export so it doesn't play forward in real-time
+            if (!video.paused) {
+                try { video.pause(); } catch (e) {}
+            }
+
             const target = Math.max(0, elapsedSeconds - start) % video.duration;
             if (Math.abs(video.currentTime - target) > 0.001) {
                 videoSeeks.push(new Promise((resolve) => {
@@ -2603,7 +2616,7 @@ async function syncAllVideosToTime(elapsedSeconds, layout, force = false) {
                         resolve();
                     };
                     video.addEventListener('seeked', onSeeked);
-                    setTimeout(onSeeked, 100);
+                    setTimeout(onSeeked, 150);
                     try {
                         video.currentTime = target;
                     } catch (error) {
@@ -2663,7 +2676,7 @@ async function recordPreviewWebM(frameRate = EXPORT_FRAME_RATE) {
 
         const render = async () => {
             const elapsed = Math.min(TOTAL_SECONDS, frameIndex / frameRate);
-            await syncAllVideosToTime(elapsed, layout, frameIndex === 0);
+            await syncAllVideosToTime(elapsed, layout, true);
             drawExportFrame(ctx, canvas, elapsed, layout);
             videoTrack?.requestFrame?.();
 
