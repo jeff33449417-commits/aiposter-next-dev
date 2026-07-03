@@ -29,11 +29,17 @@ const PREVIEW_EFFECT_CLASSES = [
     'effect-fade-up',
     'effect-mask-reveal',
     'effect-light-sweep',
+    'effect-zoom-in',
+    'effect-slide-in',
+    'effect-rotate-in',
     'effect-fade-out',
     'effect-slide-out',
     'effect-glitch-out',
     'effect-particle',
-    'effect-stretch-out'
+    'effect-stretch-out',
+    'effect-zoom-out',
+    'effect-spin-out',
+    'effect-wipe-out'
 ];
 
 function selectedProduct() {
@@ -219,6 +225,9 @@ function entryOptionsHtml() {
         <option value="effect-fade-up">Fade Up Characters</option>
         <option value="effect-mask-reveal">Mask Reveal</option>
         <option value="effect-light-sweep">CC Light Sweep</option>
+        <option value="effect-zoom-in">Zoom In & Pop</option>
+        <option value="effect-slide-in">Slide In</option>
+        <option value="effect-rotate-in">Rotate In</option>
         <option value="add-text">在下方增加輸入文字框</option>
         <option value="add-image">在下方增加上傳圖片框</option>
         <option value="add-video">在下方增加上傳視頻框</option>`;
@@ -232,6 +241,9 @@ function exitOptionsHtml() {
         <option value="effect-glitch-out">Glitch Out</option>
         <option value="effect-particle">Particle Dissolve</option>
         <option value="effect-stretch-out">Stretch Out</option>
+        <option value="effect-zoom-out">Zoom Out & Fade</option>
+        <option value="effect-spin-out">Spin Out</option>
+        <option value="effect-wipe-out">Wipe Out</option>
         <option value="delete-row">刪除本框</option>`;
 }
 
@@ -2503,6 +2515,7 @@ function exportEffectOpacity(clip, elapsedSeconds) {
     let offsetY = 0;
     let scaleX = 1;
     let scaleY = 1;
+    let rotate = 0;
     let typewriterProgress = undefined;
     let clipLeftToRight = undefined;
     let clipFromCenter = undefined;
@@ -2526,6 +2539,18 @@ function exportEffectOpacity(clip, elapsedSeconds) {
             clipFromCenter = progress;
         } else if (entryEffect === 'effect-light-sweep') {
             lightSweepProgress = progress;
+        } else if (entryEffect === 'effect-zoom-in') {
+            opacity = progress;
+            scaleX = progress;
+            scaleY = progress;
+        } else if (entryEffect === 'effect-slide-in') {
+            opacity = progress;
+            offsetX = -(1 - progress) * 40;
+        } else if (entryEffect === 'effect-rotate-in') {
+            opacity = progress;
+            scaleX = progress;
+            scaleY = progress;
+            rotate = -(1 - progress) * Math.PI;
         }
     }
 
@@ -2545,6 +2570,18 @@ function exportEffectOpacity(clip, elapsedSeconds) {
         } else if (exitEffect === 'effect-stretch-out') {
             opacity *= progress;
             scaleX = progress;
+        } else if (exitEffect === 'effect-zoom-out') {
+            opacity *= progress;
+            scaleX = progress;
+            scaleY = progress;
+        } else if (exitEffect === 'effect-spin-out') {
+            opacity *= progress;
+            scaleX = progress;
+            scaleY = progress;
+            rotate = (1 - progress) * 2 * Math.PI;
+        } else if (exitEffect === 'effect-wipe-out') {
+            opacity *= progress;
+            clipLeftToRight = progress;
         }
     }
 
@@ -2554,6 +2591,7 @@ function exportEffectOpacity(clip, elapsedSeconds) {
         offsetY,
         scaleX,
         scaleY,
+        rotate,
         typewriterProgress,
         clipLeftToRight,
         clipFromCenter,
@@ -2573,6 +2611,15 @@ function applyClipEffects(ctx, box, effect) {
     // Glitch Offset
     if (effect.glitchOffset) {
         ctx.translate(effect.glitchOffset, 0);
+    }
+    
+    // Rotation
+    if (effect.rotate !== undefined && effect.rotate !== 0) {
+        const cx = box.x + box.width / 2;
+        const cy = box.y + box.height / 2;
+        ctx.translate(cx, cy);
+        ctx.rotate(effect.rotate);
+        ctx.translate(-cx, -cy);
     }
     
     // Scaling (Stretch Out)
