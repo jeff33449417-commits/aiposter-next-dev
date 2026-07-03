@@ -2497,21 +2497,144 @@ function exportEffectOpacity(clip, elapsedSeconds) {
     const localTime = elapsedSeconds - start;
     const remaining = start + duration - elapsedSeconds;
     const effectWindow = Math.min(1, Math.max(0.25, duration / 3));
+    
     let opacity = 1;
+    let offsetX = 0;
     let offsetY = 0;
+    let scaleX = 1;
+    let scaleY = 1;
+    let typewriterProgress = undefined;
+    let clipLeftToRight = undefined;
+    let clipFromCenter = undefined;
+    let lightSweepProgress = undefined;
+    let glitchOffset = undefined;
+    let particleProgress = undefined;
 
-    if (getRowEffect(row, 0) && localTime <= effectWindow) {
+    const entryEffect = getRowEffect(row, 0);
+    const exitEffect = getRowEffect(row, 1);
+
+    if (entryEffect && localTime <= effectWindow) {
         const progress = clamp(localTime / effectWindow, 0, 1);
-        opacity = progress;
-        offsetY = (1 - progress) * 18;
+        if (entryEffect === 'effect-typewriter') {
+            typewriterProgress = progress;
+            clipLeftToRight = progress;
+        } else if (entryEffect === 'effect-fade-up') {
+            opacity = progress;
+            offsetY = (1 - progress) * 18;
+        } else if (entryEffect === 'effect-mask-reveal') {
+            opacity = progress;
+            clipFromCenter = progress;
+        } else if (entryEffect === 'effect-light-sweep') {
+            lightSweepProgress = progress;
+        }
     }
 
-    if (getRowEffect(row, 1) && remaining <= effectWindow) {
+    if (exitEffect && remaining <= effectWindow) {
         const progress = clamp(remaining / effectWindow, 0, 1);
-        opacity *= progress;
+        if (exitEffect === 'effect-fade-out') {
+            opacity *= progress;
+        } else if (exitEffect === 'effect-slide-out') {
+            opacity *= progress;
+            offsetX = (1 - progress) * 40; // slide right
+        } else if (exitEffect === 'effect-glitch-out') {
+            opacity *= (progress < 0.2 && Math.random() < 0.5 ? 0 : progress);
+            glitchOffset = (Math.random() - 0.5) * 15 * (1 - progress);
+        } else if (exitEffect === 'effect-particle') {
+            particleProgress = progress;
+            opacity *= progress;
+        } else if (exitEffect === 'effect-stretch-out') {
+            opacity *= progress;
+            scaleX = progress;
+        }
     }
 
-    return { opacity, offsetY };
+    return {
+        opacity,
+        offsetX,
+        offsetY,
+        scaleX,
+        scaleY,
+        typewriterProgress,
+        clipLeftToRight,
+        clipFromCenter,
+        lightSweepProgress,
+        glitchOffset,
+        particleProgress
+    };
+}
+
+function applyClipEffects(ctx, box, effect) {
+    // Opacity
+    ctx.globalAlpha = ctx.globalAlpha * effect.opacity;
+    
+    // Translation (Offset)
+    ctx.translate(effect.offsetX || 0, effect.offsetY || 0);
+    
+    // Glitch Offset
+    if (effect.glitchOffset) {
+        ctx.translate(effect.glitchOffset, 0);
+    }
+    
+    // Scaling (Stretch Out)
+    if (effect.scaleX !== 1 || effect.scaleY !== 1) {
+        const cx = box.x + box.width / 2;
+        const cy = box.y + box.height / 2;
+        ctx.translate(cx, cy);
+        ctx.scale(effect.scaleX, effect.scaleY);
+        ctx.translate(-cx, -cy);
+    }
+    
+    // Typewriter / Left-to-right wipe on image/video
+    if (effect.clipLeftToRight !== undefined) {
+        ctx.beginPath();
+        ctx.rect(box.x, box.y, box.width * effect.clipLeftToRight, box.height);
+        ctx.clip();
+    }
+    
+    // Center expansion Mask Reveal
+    if (effect.clipFromCenter !== undefined) {
+        const p = effect.clipFromCenter;
+        const w = box.width * p;
+        const h = box.height * p;
+        const x = box.x + (box.width - w) / 2;
+        const y = box.y + (box.height - h) / 2;
+        ctx.beginPath();
+        ctx.rect(x, y, w, h);
+        ctx.clip();
+    }
+    
+    // Particle Dissolve (Vertical stripes cut)
+    if (effect.particleProgress !== undefined) {
+        const p = effect.particleProgress;
+        ctx.beginPath();
+        const numStripes = 10;
+        const stripeHeight = box.height / numStripes;
+        for (let i = 0; i < numStripes; i++) {
+            const threshold = 0.1 + (i / numStripes) * 0.8;
+            if (p > threshold) {
+                ctx.rect(box.x, box.y + i * stripeHeight, box.width, stripeHeight);
+            }
+        }
+        ctx.clip();
+    }
+}
+
+function drawLightSweep(ctx, box, progress) {
+    ctx.save();
+    // Diagonal light sweep gradient moving left-to-right
+    const x0 = box.x + (box.width + 100) * progress - 50;
+    const y0 = box.y;
+    const x1 = x0 + 40;
+    const y1 = box.y + box.height;
+    
+    const grad = ctx.createLinearGradient(x0, y0, x1, y1);
+    grad.addColorStop(0, 'rgba(255, 255, 255, 0)');
+    grad.addColorStop(0.5, 'rgba(255, 255, 255, 0.75)');
+    grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    
+    ctx.fillStyle = grad;
+    ctx.fillRect(box.x, box.y, box.width, box.height);
+    ctx.restore();
 }
 
 function clipPolygon(ctx, box, corners) {
@@ -2553,11 +2676,16 @@ function drawImageClip(ctx, clip, layer, box, effect) {
     const sw = image.naturalWidth * (100 - crop.left - crop.right) / 100;
     const sh = image.naturalHeight * (100 - crop.top - crop.bottom) / 100;
     ctx.save();
-    ctx.globalAlpha = effect.opacity;
-    ctx.translate(0, effect.offsetY);
+    
+    applyClipEffects(ctx, box, effect);
+    
     clipPolygon(ctx, box, state.corners);
     ctx.drawImage(image, sx, sy, sw, sh, box.x, box.y, box.width, box.height);
     ctx.restore();
+    
+    if (effect.lightSweepProgress !== undefined) {
+        drawLightSweep(ctx, box, effect.lightSweepProgress);
+    }
 }
 
 // Align the video playhead to the clip's local time WITHOUT blocking the
@@ -2600,13 +2728,18 @@ function drawVideoClip(ctx, clip, layer, box, effect, elapsedSeconds) {
     const sw = video.videoWidth * (100 - crop.left - crop.right) / 100;
     const sh = video.videoHeight * (100 - crop.top - crop.bottom) / 100;
     ctx.save();
-    ctx.globalAlpha = effect.opacity;
-    ctx.translate(0, effect.offsetY);
+    
+    applyClipEffects(ctx, box, effect);
+    
     clipPolygon(ctx, box, state.corners);
     try {
         ctx.drawImage(video, sx, sy, sw, sh, box.x, box.y, box.width, box.height);
     } catch (error) {}
     ctx.restore();
+    
+    if (effect.lightSweepProgress !== undefined) {
+        drawLightSweep(ctx, box, effect.lightSweepProgress);
+    }
 }
 
 async function prepareExportVideos() {
@@ -2645,19 +2778,30 @@ async function prepareExportVideos() {
 
 function drawTextClip(ctx, clip, layer, box, scaleY, effect) {
     const input = clip.querySelector('.content-input');
-    const text = input?.value || '';
+    let text = input?.value || '';
     if (!text) return;
+    
+    if (effect.typewriterProgress !== undefined) {
+        const charCount = Math.floor(text.length * effect.typewriterProgress);
+        text = text.slice(0, charCount);
+    }
+    
     const style = getComputedStyle(layer);
     const fontSize = Math.max(6, parseFloat(style.fontSize) * scaleY);
     ctx.save();
-    ctx.globalAlpha = effect.opacity;
-    ctx.translate(0, effect.offsetY);
+    
+    applyClipEffects(ctx, box, effect);
+    
     ctx.fillStyle = style.color || '#1d2554';
     ctx.font = `${style.fontWeight || 800} ${fontSize}px ${style.fontFamily || 'sans-serif'}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, box.x + box.width / 2, box.y + box.height / 2, box.width);
     ctx.restore();
+    
+    if (effect.lightSweepProgress !== undefined) {
+        drawLightSweep(ctx, box, effect.lightSweepProgress);
+    }
 }
 
 function drawExportFrame(ctx, canvas, elapsedSeconds, layout = createExportFrameLayout(canvas)) {
