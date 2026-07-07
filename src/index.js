@@ -878,8 +878,7 @@ async function handleExportJob(request, env, user, ctx) {
 
   const activeUserJob = await getActiveExportForUser(env, user.id);
   if (activeUserJob) {
-    const host = (request.headers.get("host") || "").toLowerCase();
-    const isProduction = env.APP_ENV === "production" && (host.includes("my.aiposter.jp") || host.includes("my.aiposter.tw"));
+    const isProduction = Boolean(request.headers.get("Cf-Access-Authenticated-User-Email"));
     if (isProduction) {
       return json({
         ok: false,
@@ -946,8 +945,7 @@ async function handleExportJob(request, env, user, ctx) {
   }
 
   const jobId = `job_${crypto.randomUUID()}`;
-  const host = (request.headers.get("host") || "").toLowerCase();
-  const isProduction = env.APP_ENV === "production" && (host.includes("my.aiposter.jp") || host.includes("my.aiposter.tw"));
+  const isProduction = Boolean(request.headers.get("Cf-Access-Authenticated-User-Email"));
   const hasRenderer = (!isProduction) ? true : await rendererAvailable(env);
   const initialStatus = hasRenderer ? "queued" : "waiting_renderer";
   const initialError = hasRenderer
@@ -957,7 +955,8 @@ async function handleExportJob(request, env, user, ctx) {
     projectId: body.projectId || null,
     format: body.format || "h265",
     settings: body.settings || {},
-    requestedAt: new Date().toISOString()
+    requestedAt: new Date().toISOString(),
+    isLocal: !isProduction
   };
 
   try {
@@ -1127,9 +1126,31 @@ async function processExportJob(env, jobId) {
     return;
   }
 
+  const isLocal = job.input?.isLocal;
   const renderer = await getRendererEndpoint(env);
-  if (!renderer?.url) {
-    console.log(`[processExportJob] No renderer URL found. Mocking export for local dev...`);
+  
+  if (isLocal || !renderer?.url) {
+    if (isLocal) {
+      console.log(`[processExportJob] Job ${jobId} is local dev. Running mock transcode.`);
+    } else {
+      console.log(`[processExportJob] No active renderer found for production job ${jobId}.`);
+      await markJob(
+        env,
+        jobId,
+        "waiting_renderer",
+        "H.265 renderer service is not connected yet. Source asset is already stored in R2."
+      );
+      await createSystemAlert(
+        env,
+        "warning",
+        "renderer",
+        "No renderer available",
+        `Job ${jobId} is waiting because no active renderer endpoint is configured.`,
+        { jobId }
+      );
+      return;
+    }
+
     const sourceAssetId = job.input?.settings?.sourceAssetId;
     if (!sourceAssetId) {
       await markJob(env, jobId, "failed", "Missing source asset for H.265 export.");
