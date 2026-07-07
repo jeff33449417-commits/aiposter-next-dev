@@ -2217,21 +2217,58 @@ async function downloadJobOutput(jobId) {
     const outputUrl = jobOutputUrl(job);
     if (!outputUrl) return;
     const filename = jobOutputFilename(job).replace(/\.html$/i, '').replace(/\.mp4$/i, '') + '.mp4';
+    
+    const btn = document.querySelector('.export-link-btn');
+    const originalText = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ 下載中...';
+    }
+
     try {
+        const response = await fetch(outputUrl);
+        if (!response.ok) {
+            throw new Error(`下載失敗：HTTP ${response.status}`);
+        }
+        const blob = await response.blob();
+        
+        // Safety check: if returned file is HTML page or too small, fail gracefully
+        if (blob.type.includes('html') || blob.size < 20000) {
+            const text = await blob.text();
+            try {
+                const errJson = JSON.parse(text);
+                throw new Error(errJson.message || errJson.code || '下載資料格式不正確');
+            } catch (e) {
+                throw new Error('伺服器未傳回正確的影片檔案，請稍後再試。');
+            }
+        }
+
+        const blobUrl = URL.createObjectURL(blob);
         const downloadLink = document.createElement('a');
-        downloadLink.href = outputUrl;
+        downloadLink.href = blobUrl;
         downloadLink.download = filename;
         downloadLink.rel = 'noopener';
         downloadLink.style.display = 'none';
         document.body.appendChild(downloadLink);
         downloadLink.click();
         downloadLink.remove();
+        
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
     } catch (error) {
-        window.location.assign(outputUrl);
-        upsertExportJob({
-            ...job,
-            errorMessage: error.message || '下載失敗，請稍後再試。'
-        });
+        // Fallback for direct output URL download check:
+        // downloadLink.href = outputUrl;
+        alert(error.message || '下載失敗，請稍後再試。');
+        if (job) {
+            upsertExportJob({
+                ...job,
+                errorMessage: error.message || '下載失敗，請稍後再試。'
+            });
+        }
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
     }
 }
 

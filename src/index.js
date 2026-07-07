@@ -62,13 +62,8 @@ function commerceOriginForbidden(request, env) {
   return Boolean(origin && !commerceAllowedOrigins(env).includes(origin));
 }
 
-function getAccessEmail(request, env) {
-  let email = request.headers.get("Cf-Access-Authenticated-User-Email");
-  console.log(`[getAccessEmail] Cf-Access-Authenticated-User-Email: "${email || 'none'}"`);
-  if (!email) {
-    email = (env?.OWNER_EMAIL || "Jeff33449417@gmail.com").trim();
-  }
-  console.log(`[getAccessEmail] Final resolved email: "${email || 'none'}"`);
+function getAccessEmail(request) {
+  const email = request.headers.get("Cf-Access-Authenticated-User-Email");
   return email ? email.trim().toLowerCase() : "";
 }
 
@@ -366,7 +361,7 @@ async function getAppVersion(env, id) {
 }
 
 async function getOrCreateUser(request, env) {
-  const email = normalizeEmail(getAccessEmail(request, env));
+  const email = normalizeEmail(getAccessEmail(request));
   if (!email) {
     return null;
   }
@@ -563,14 +558,8 @@ function activeStatusPlaceholders() {
   return ACTIVE_EXPORT_STATUSES.map(() => "?").join(", ");
 }
 
-async function cleanupStaleExportJobs(env, request) {
-  const host = request ? (request.headers.get("host") || "").toLowerCase() : "";
-  const isProduction = env.APP_ENV === "production" && (host.includes("my.aiposter.jp") || host.includes("my.aiposter.tw"));
-  
-  const timeoutModifier = isProduction
-    ? `-${envNumber(env, "EXPORT_JOB_TIMEOUT_MINUTES", 45)} minutes`
-    : "-10 seconds";
-
+async function cleanupStaleExportJobs(env) {
+  const timeoutMinutes = envNumber(env, "EXPORT_JOB_TIMEOUT_MINUTES", 45);
   const result = await env.DB.prepare(
     `UPDATE jobs
      SET status = 'failed',
@@ -579,14 +568,14 @@ async function cleanupStaleExportJobs(env, request) {
      WHERE type = 'export_h265'
        AND status IN (${activeStatusPlaceholders()})
        AND datetime(updated_at) < datetime('now', ?)`
-  ).bind(...ACTIVE_EXPORT_STATUSES, timeoutModifier).run();
+  ).bind(...ACTIVE_EXPORT_STATUSES, `-${timeoutMinutes} minutes`).run();
 
   const changed = Number(result?.meta?.changes || 0);
   if (changed > 0) {
     console.warn(JSON.stringify({
       event: "stale_export_jobs_failed",
       count: changed,
-      modifier: timeoutModifier
+      timeoutMinutes
     }));
   }
 }
@@ -767,7 +756,7 @@ async function handleJobs(request, env, user) {
     }, { status: 405, headers: { allow: "GET" } });
   }
 
-  await cleanupStaleExportJobs(env, request);
+  await cleanupStaleExportJobs(env);
   const rows = await env.DB.prepare(
     `SELECT id, project_id, type, status, input_json, output_r2_key, error_message, created_at, updated_at
      FROM jobs
@@ -796,7 +785,7 @@ async function handleJobById(request, env, user, jobId) {
     }, { status: 405, headers: { allow: "GET" } });
   }
 
-  await cleanupStaleExportJobs(env, request);
+  await cleanupStaleExportJobs(env);
   const job = await env.DB.prepare(
     `SELECT id, project_id, type, status, input_json, output_r2_key, error_message, created_at, updated_at
      FROM jobs
@@ -866,7 +855,7 @@ async function handleExportJob(request, env, user, ctx) {
     }, { status: 403 });
   }
 
-  await cleanupStaleExportJobs(env, request);
+  await cleanupStaleExportJobs(env);
   const dailyExportCount = await countDailyExports(env, user.id);
   if (dailyExportCount >= Number(featurePayload.limits.exports_per_day || 0)) {
     return json({
@@ -878,20 +867,12 @@ async function handleExportJob(request, env, user, ctx) {
 
   const activeUserJob = await getActiveExportForUser(env, user.id);
   if (activeUserJob) {
-    const isProduction = Boolean(request.headers.get("Cf-Access-Authenticated-User-Email"));
-    if (isProduction) {
-      return json({
-        ok: false,
-        code: "ACTIVE_EXPORT_EXISTS",
-        message: "你已經有一個 MP4 任務正在處理，請等它完成後再送出新的安排。",
-        job: await serializeJobForResponse(env, activeUserJob)
-      }, { status: 409 });
-    } else {
-      await env.DB.prepare(
-        `UPDATE jobs SET status = 'failed', error_message = 'Cancelled by a new export request.', updated_at = datetime('now') WHERE id = ?`
-      ).bind(activeUserJob.id).run();
-      console.log(`[handleExportJob] Cancelled active local job ${activeUserJob.id} to allow new export.`);
-    }
+    return json({
+      ok: false,
+      code: "ACTIVE_EXPORT_EXISTS",
+      message: "你已經有一個 MP4 任務正在處理，請等它完成後再送出新的安排。",
+      job: await serializeJobForResponse(env, activeUserJob)
+    }, { status: 409 });
   }
 
   const activeExportCount = await countActiveExports(env);
@@ -945,8 +926,7 @@ async function handleExportJob(request, env, user, ctx) {
   }
 
   const jobId = `job_${crypto.randomUUID()}`;
-  const isProduction = Boolean(request.headers.get("Cf-Access-Authenticated-User-Email"));
-  const hasRenderer = (!isProduction) ? true : await rendererAvailable(env);
+  const hasRenderer = await rendererAvailable(env);
   const initialStatus = hasRenderer ? "queued" : "waiting_renderer";
   const initialError = hasRenderer
     ? null
@@ -955,8 +935,7 @@ async function handleExportJob(request, env, user, ctx) {
     projectId: body.projectId || null,
     format: body.format || "h265",
     settings: body.settings || {},
-    requestedAt: new Date().toISOString(),
-    isLocal: !isProduction
+    requestedAt: new Date().toISOString()
   };
 
   try {
@@ -1126,59 +1105,22 @@ async function processExportJob(env, jobId) {
     return;
   }
 
-  const isLocal = job.input?.isLocal;
   const renderer = await getRendererEndpoint(env);
-  
-  if (isLocal || !renderer?.url) {
-    if (isLocal) {
-      console.log(`[processExportJob] Job ${jobId} is local dev. Running mock transcode.`);
-    } else {
-      console.log(`[processExportJob] No active renderer found for production job ${jobId}.`);
-      await markJob(
-        env,
-        jobId,
-        "waiting_renderer",
-        "H.265 renderer service is not connected yet. Source asset is already stored in R2."
-      );
-      await createSystemAlert(
-        env,
-        "warning",
-        "renderer",
-        "No renderer available",
-        `Job ${jobId} is waiting because no active renderer endpoint is configured.`,
-        { jobId }
-      );
-      return;
-    }
-
-    const sourceAssetId = job.input?.settings?.sourceAssetId;
-    if (!sourceAssetId) {
-      await markJob(env, jobId, "failed", "Missing source asset for H.265 export.");
-      return;
-    }
-    const sourceAsset = await env.DB.prepare(
-      `SELECT r2_key, mime_type FROM assets WHERE id = ? AND owner_user_id = ?`
-    ).bind(sourceAssetId, job.owner_user_id).first();
-    
-    if (!sourceAsset) {
-      await markJob(env, jobId, "failed", "Source asset was not found.");
-      return;
-    }
-    const sourceObject = await env.ASSETS_BUCKET.get(sourceAsset.r2_key);
-    if (!sourceObject) {
-      await markJob(env, jobId, "failed", "Source asset object was not found in R2.");
-      return;
-    }
-    
-    const outputKey = `exports/${job.owner_user_id}/${job.id}/output.mp4`;
-    await env.ASSETS_BUCKET.put(outputKey, sourceObject.body, {
-      httpMetadata: {
-        contentType: "video/mp4",
-        contentDisposition: `attachment; filename="${filenameFromR2Key(sourceAsset.r2_key)}"`
-      }
-    });
-    await markJob(env, jobId, "completed", null, outputKey);
-    console.log(`[processExportJob] Local mock export completed successfully for job ${jobId}!`);
+  if (!renderer?.url) {
+    await markJob(
+      env,
+      jobId,
+      "waiting_renderer",
+      "H.265 renderer service is not connected yet. Source asset is already stored in R2."
+    );
+    await createSystemAlert(
+      env,
+      "warning",
+      "renderer",
+      "No renderer available",
+      `Job ${jobId} is waiting because no active renderer endpoint is configured.`,
+      { jobId }
+    );
     return;
   }
 
@@ -1467,39 +1409,72 @@ async function handleJobOutput(request, env, user, jobId) {
     }, { status: 405, headers: { allow: "GET" } });
   }
 
-  const job = await env.DB.prepare(
-    `SELECT id, output_r2_key
-     FROM jobs
-     WHERE id = ? AND owner_user_id = ? AND status = 'completed'`
-  ).bind(jobId, user.id).first();
+  try {
+    const job = await env.DB.prepare(
+      `SELECT id, output_r2_key, owner_user_id, status
+       FROM jobs
+       WHERE id = ?`
+    ).bind(jobId).first();
 
-  if (!job?.output_r2_key) {
-    return json({
-      ok: false,
-      code: "JOB_OUTPUT_NOT_FOUND",
-      message: "Job output was not found."
-    }, { status: 404 });
-  }
-
-  const object = await env.ASSETS_BUCKET.get(job.output_r2_key);
-  if (!object) {
-    return json({
-      ok: false,
-      code: "JOB_OUTPUT_OBJECT_NOT_FOUND",
-      message: "Job output file was not found."
-    }, { status: 404 });
-  }
-
-  const filename = `${job.id}_h265.mp4`;
-  return new Response(object.body, {
-    headers: {
-      "content-type": "video/mp4",
-      "content-disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-      "x-content-type-options": "nosniff",
-      "cache-control": "private, max-age=300",
-      "etag": object.httpEtag
+    if (!job) {
+      return json({
+        ok: false,
+        code: "DEBUG_JOB_NOT_FOUND_IN_DB",
+        debug: { jobId, currentUserId: user.id }
+      }, { status: 200 }); // Status 200 prevents Cloudflare Assets SPA 404 hijack
     }
-  });
+
+    if (job.owner_user_id !== user.id) {
+      return json({
+        ok: false,
+        code: "DEBUG_JOB_OWNER_MISMATCH",
+        debug: { jobId, jobOwnerId: job.owner_user_id, currentUserId: user.id }
+      }, { status: 200 });
+    }
+
+    if (job.status !== "completed") {
+      return json({
+        ok: false,
+        code: "DEBUG_JOB_NOT_COMPLETED",
+        debug: { jobId, jobStatus: job.status }
+      }, { status: 200 });
+    }
+
+    if (!job.output_r2_key) {
+      return json({
+        ok: false,
+        code: "DEBUG_JOB_MISSING_R2_KEY",
+        debug: { jobId }
+      }, { status: 200 });
+    }
+
+    const object = await env.ASSETS_BUCKET.get(job.output_r2_key);
+    if (!object) {
+      return json({
+        ok: false,
+        code: "DEBUG_R2_OBJECT_NOT_FOUND",
+        debug: { jobId, outputR2Key: job.output_r2_key }
+      }, { status: 200 });
+    }
+
+    const filename = `${job.id}_h265.mp4`;
+    return new Response(object.body, {
+      headers: {
+        "content-type": "video/mp4",
+        "content-disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        "x-content-type-options": "nosniff",
+        "cache-control": "private, max-age=300",
+        "etag": object.httpEtag
+      }
+    });
+  } catch (error) {
+    return json({
+      ok: false,
+      code: "DEBUG_EXC_THROWN",
+      message: error.message || "Internal error in handleJobOutput",
+      stack: error.stack || ""
+    }, { status: 200 });
+  }
 }
 
 function requireAdmin(user) {
