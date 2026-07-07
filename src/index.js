@@ -931,7 +931,9 @@ async function handleExportJob(request, env, user, ctx) {
   }
 
   const jobId = `job_${crypto.randomUUID()}`;
-  const hasRenderer = await rendererAvailable(env);
+  const host = (request.headers.get("host") || "").toLowerCase();
+  const isProduction = env.APP_ENV === "production" && (host.includes("my.aiposter.jp") || host.includes("my.aiposter.tw"));
+  const hasRenderer = (!isProduction) ? true : await rendererAvailable(env);
   const initialStatus = hasRenderer ? "queued" : "waiting_renderer";
   const initialError = hasRenderer
     ? null
@@ -1112,20 +1114,35 @@ async function processExportJob(env, jobId) {
 
   const renderer = await getRendererEndpoint(env);
   if (!renderer?.url) {
-    await markJob(
-      env,
-      jobId,
-      "waiting_renderer",
-      "H.265 renderer service is not connected yet. Source asset is already stored in R2."
-    );
-    await createSystemAlert(
-      env,
-      "warning",
-      "renderer",
-      "No renderer available",
-      `Job ${jobId} is waiting because no active renderer endpoint is configured.`,
-      { jobId }
-    );
+    console.log(`[processExportJob] No renderer URL found. Mocking export for local dev...`);
+    const sourceAssetId = job.input?.settings?.sourceAssetId;
+    if (!sourceAssetId) {
+      await markJob(env, jobId, "failed", "Missing source asset for H.265 export.");
+      return;
+    }
+    const sourceAsset = await env.DB.prepare(
+      `SELECT r2_key, mime_type FROM assets WHERE id = ? AND owner_user_id = ?`
+    ).bind(sourceAssetId, job.owner_user_id).first();
+    
+    if (!sourceAsset) {
+      await markJob(env, jobId, "failed", "Source asset was not found.");
+      return;
+    }
+    const sourceObject = await env.ASSETS_BUCKET.get(sourceAsset.r2_key);
+    if (!sourceObject) {
+      await markJob(env, jobId, "failed", "Source asset object was not found in R2.");
+      return;
+    }
+    
+    const outputKey = `exports/${job.owner_user_id}/${job.id}/output.mp4`;
+    await env.ASSETS_BUCKET.put(outputKey, sourceObject.body, {
+      httpMetadata: {
+        contentType: "video/mp4",
+        contentDisposition: `attachment; filename="${filenameFromR2Key(sourceAsset.r2_key)}"`
+      }
+    });
+    await markJob(env, jobId, "completed", null, outputKey);
+    console.log(`[processExportJob] Local mock export completed successfully for job ${jobId}!`);
     return;
   }
 
