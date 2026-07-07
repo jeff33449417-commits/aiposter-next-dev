@@ -563,8 +563,14 @@ function activeStatusPlaceholders() {
   return ACTIVE_EXPORT_STATUSES.map(() => "?").join(", ");
 }
 
-async function cleanupStaleExportJobs(env) {
-  const timeoutMinutes = envNumber(env, "EXPORT_JOB_TIMEOUT_MINUTES", 45);
+async function cleanupStaleExportJobs(env, request) {
+  const host = request ? (request.headers.get("host") || "").toLowerCase() : "";
+  const isProduction = env.APP_ENV === "production" && (host.includes("my.aiposter.jp") || host.includes("my.aiposter.tw"));
+  
+  const timeoutModifier = isProduction
+    ? `-${envNumber(env, "EXPORT_JOB_TIMEOUT_MINUTES", 45)} minutes`
+    : "-10 seconds";
+
   const result = await env.DB.prepare(
     `UPDATE jobs
      SET status = 'failed',
@@ -573,14 +579,14 @@ async function cleanupStaleExportJobs(env) {
      WHERE type = 'export_h265'
        AND status IN (${activeStatusPlaceholders()})
        AND datetime(updated_at) < datetime('now', ?)`
-  ).bind(...ACTIVE_EXPORT_STATUSES, `-${timeoutMinutes} minutes`).run();
+  ).bind(...ACTIVE_EXPORT_STATUSES, timeoutModifier).run();
 
   const changed = Number(result?.meta?.changes || 0);
   if (changed > 0) {
     console.warn(JSON.stringify({
       event: "stale_export_jobs_failed",
       count: changed,
-      timeoutMinutes
+      modifier: timeoutModifier
     }));
   }
 }
@@ -761,7 +767,7 @@ async function handleJobs(request, env, user) {
     }, { status: 405, headers: { allow: "GET" } });
   }
 
-  await cleanupStaleExportJobs(env);
+  await cleanupStaleExportJobs(env, request);
   const rows = await env.DB.prepare(
     `SELECT id, project_id, type, status, input_json, output_r2_key, error_message, created_at, updated_at
      FROM jobs
@@ -790,7 +796,7 @@ async function handleJobById(request, env, user, jobId) {
     }, { status: 405, headers: { allow: "GET" } });
   }
 
-  await cleanupStaleExportJobs(env);
+  await cleanupStaleExportJobs(env, request);
   const job = await env.DB.prepare(
     `SELECT id, project_id, type, status, input_json, output_r2_key, error_message, created_at, updated_at
      FROM jobs
@@ -860,7 +866,7 @@ async function handleExportJob(request, env, user, ctx) {
     }, { status: 403 });
   }
 
-  await cleanupStaleExportJobs(env);
+  await cleanupStaleExportJobs(env, request);
   const dailyExportCount = await countDailyExports(env, user.id);
   if (dailyExportCount >= Number(featurePayload.limits.exports_per_day || 0)) {
     return json({
@@ -872,12 +878,21 @@ async function handleExportJob(request, env, user, ctx) {
 
   const activeUserJob = await getActiveExportForUser(env, user.id);
   if (activeUserJob) {
-    return json({
-      ok: false,
-      code: "ACTIVE_EXPORT_EXISTS",
-      message: "你已經有一個 MP4 任務正在處理，請等它完成後再送出新的安排。",
-      job: await serializeJobForResponse(env, activeUserJob)
-    }, { status: 409 });
+    const host = (request.headers.get("host") || "").toLowerCase();
+    const isProduction = env.APP_ENV === "production" && (host.includes("my.aiposter.jp") || host.includes("my.aiposter.tw"));
+    if (isProduction) {
+      return json({
+        ok: false,
+        code: "ACTIVE_EXPORT_EXISTS",
+        message: "你已經有一個 MP4 任務正在處理，請等它完成後再送出新的安排。",
+        job: await serializeJobForResponse(env, activeUserJob)
+      }, { status: 409 });
+    } else {
+      await env.DB.prepare(
+        `UPDATE jobs SET status = 'failed', error_message = 'Cancelled by a new export request.', updated_at = datetime('now') WHERE id = ?`
+      ).bind(activeUserJob.id).run();
+      console.log(`[handleExportJob] Cancelled active local job ${activeUserJob.id} to allow new export.`);
+    }
   }
 
   const activeExportCount = await countActiveExports(env);
