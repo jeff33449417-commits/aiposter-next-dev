@@ -22,4 +22,9 @@ npm run check
 
 # 3. Start dev server
 echo "🚀 正在啟動本機開發伺服器..."
-npm run dev
+if [ "$CLOUD_SHELL" = "true" ]; then
+  echo "💡 偵測到於 Google Cloud Shell 環境執行，已自動將連接埠設為 8080 以配合網頁預覽 (Web Preview)。"
+  npx wrangler dev --port 8080
+else
+  npm run dev
+fi
