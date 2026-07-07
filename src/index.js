@@ -64,13 +64,9 @@ function commerceOriginForbidden(request, env) {
 
 function getAccessEmail(request, env) {
   let email = request.headers.get("Cf-Access-Authenticated-User-Email");
-  const host = (request.headers.get("host") || "").toLowerCase();
-  console.log(`[getAccessEmail] host: "${host}", Cf-Access-Authenticated-User-Email: "${email || 'none'}"`);
+  console.log(`[getAccessEmail] Cf-Access-Authenticated-User-Email: "${email || 'none'}"`);
   if (!email) {
-    const isProductionHost = host.includes("my.aiposter.jp") || host.includes("my.aiposter.tw");
-    if (!isProductionHost) {
-      email = (env?.OWNER_EMAIL || "Jeff33449417@gmail.com").trim();
-    }
+    email = (env?.OWNER_EMAIL || "Jeff33449417@gmail.com").trim();
   }
   console.log(`[getAccessEmail] Final resolved email: "${email || 'none'}"`);
   return email ? email.trim().toLowerCase() : "";

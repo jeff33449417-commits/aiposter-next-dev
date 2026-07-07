@@ -16,9 +16,11 @@ else
   echo "✅ 依賴套件 (node_modules) 已準備就緒。"
 fi
 
-# 2. Run static analysis and tests
+# 2. Run static analysis, tests, and D1 migrations
 echo "🔍 正在檢查專案結構與健康狀態..."
 npm run check
+echo "🗄️ 正在進行本地 D1 資料庫遷移 (Migrations)..."
+npx wrangler d1 migrations apply aiposter --local
 
 # 3. Start dev server
 echo "🚀 正在啟動本機開發伺服器..."
