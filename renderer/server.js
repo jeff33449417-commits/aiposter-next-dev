@@ -5,9 +5,13 @@ import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
+import { timingSafeEqual, createHash } from "node:crypto";
 
 const port = Number(process.env.PORT || 8788);
 const rendererToken = process.env.RENDERER_TOKEN || "";
+if (!rendererToken) {
+  console.error("[renderer] FATAL CONFIG: RENDERER_TOKEN is not set. All /render requests will be REJECTED (fail-closed). Set RENDERER_TOKEN on the renderer and the matching secret on the main Worker.");
+}
 const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES || 300 * 1024 * 1024);
 const defaultDurationSeconds = Number(process.env.EXPORT_DURATION_SECONDS || 15);
 const defaultFrameRate = Number(process.env.EXPORT_FRAME_RATE || 60);
@@ -20,12 +24,22 @@ function sendJson(response, status, data) {
   response.end(JSON.stringify(data));
 }
 
-function isAuthorized(request) {
-  if (!rendererToken) {
-    return true;
-  }
+function constantTimeEqual(a, b) {
+  // Hash to fixed length so timingSafeEqual never throws on length mismatch,
+  // and the comparison itself does not leak length via early return.
+  const ha = createHash("sha256").update(String(a)).digest();
+  const hb = createHash("sha256").update(String(b)).digest();
+  return timingSafeEqual(ha, hb);
+}
 
-  return request.headers.authorization === `Bearer ${rendererToken}`;
+function isAuthorized(request) {
+  // SECURITY: fail closed. A renderer with no token is an open, internet-facing
+  // transcoder (free CPU / DoS); never treat "no token" as "allow all".
+  if (!rendererToken) {
+    return false;
+  }
+  const header = request.headers.authorization || "";
+  return constantTimeEqual(header, `Bearer ${rendererToken}`);
 }
 
 function probeVideoDuration(inputPath) {

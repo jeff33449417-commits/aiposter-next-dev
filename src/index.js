@@ -360,6 +360,23 @@ async function getAppVersion(env, id) {
   return row;
 }
 
+// Identity resolution is on the hot path (runs on every authenticated request).
+// Cache the fully-resolved user row in KV with a short TTL so the vast majority
+// of requests resolve identity with ZERO D1 reads/writes. On a cache miss we do
+// the D1 upsert once and repopulate. Cache is busted explicitly whenever a
+// user's assignment/role/plan changes (see bustUserCache).
+const USER_CACHE_TTL_SECONDS = 60;
+
+function userCacheKey(id) {
+  return `usercache:${id}`;
+}
+
+async function bustUserCache(env, emailOrId) {
+  if (!env.APP_KV || !emailOrId) return;
+  const id = String(emailOrId).startsWith("user_") ? emailOrId : userIdFromEmail(normalizeEmail(emailOrId));
+  try { await env.APP_KV.delete(userCacheKey(id)); } catch (_) {}
+}
+
 async function getOrCreateUser(request, env) {
   const email = normalizeEmail(getAccessEmail(request));
   if (!email) {
@@ -367,6 +384,19 @@ async function getOrCreateUser(request, env) {
   }
 
   const id = userIdFromEmail(email);
+
+  // Fast path: serve identity from KV, no D1 at all.
+  if (env.APP_KV) {
+    try {
+      const cached = await env.APP_KV.get(userCacheKey(id), "json");
+      if (cached && cached.id === id && cached.status === "active") {
+        return cached;
+      }
+    } catch (_) {
+      // Ignore cache read errors and fall through to D1.
+    }
+  }
+
   const ownerEmail = (env.OWNER_EMAIL || "").trim().toLowerCase();
   const isOwner = ownerEmail && email === ownerEmail;
   const assignment = await getAssignmentForEmail(env, email);
@@ -387,11 +417,23 @@ async function getOrCreateUser(request, env) {
      WHERE id = ?`
   ).bind(displayName, role, plan, status, id).run();
 
-  return env.DB.prepare(
+  const user = await env.DB.prepare(
     `SELECT id, email, display_name, role, plan, status, created_at, updated_at
      FROM users
      WHERE id = ? AND status = 'active'`
   ).bind(id).first();
+
+  if (env.APP_KV && user) {
+    try {
+      await env.APP_KV.put(userCacheKey(id), JSON.stringify(user), {
+        expirationTtl: USER_CACHE_TTL_SECONDS
+      });
+    } catch (_) {
+      // Non-fatal: cache population failure just means the next request re-reads D1.
+    }
+  }
+
+  return user;
 }
 
 async function getFeaturePayload(env, user) {
@@ -1053,7 +1095,10 @@ async function processRendererResponse(env, job, response) {
 
     if (data.outputBase64) {
       const binary = Uint8Array.from(atob(data.outputBase64), (char) => char.charCodeAt(0));
-      const outputKey = data.outputR2Key || buildExportOutputKey(job);
+      // SECURITY: never trust a renderer-supplied R2 key — always derive it
+      // server-side, namespaced to the job owner, so a malicious/compromised
+      // renderer cannot overwrite another tenant's assets.
+      const outputKey = buildExportOutputKey(job);
       await env.ASSETS_BUCKET.put(outputKey, binary, {
         httpMetadata: {
           contentType: "video/mp4"
@@ -1068,12 +1113,15 @@ async function processRendererResponse(env, job, response) {
       return;
     }
 
+    // SECURITY: ignore any renderer-supplied output key on the interim/processing
+    // path too; the output key is only ever set server-side when we actually
+    // write the completed file above.
     await markJob(
       env,
       job.id,
       data.status || "processing",
       data.message || null,
-      data.outputR2Key || null
+      null
     );
     return;
   }
@@ -1416,44 +1464,32 @@ async function handleJobOutput(request, env, user, jobId) {
        WHERE id = ?`
     ).bind(jobId).first();
 
-    if (!job) {
+    // SECURITY: treat "not found" and "not yours" identically and reveal no
+    // internal identifiers — this prevents job-id enumeration and disclosure of
+    // another user's (email-derived) owner id. Status 200 (not 404) is kept so
+    // the Cloudflare Assets SPA fallback does not hijack the JSON body.
+    if (!job || job.owner_user_id !== user.id) {
       return json({
         ok: false,
-        code: "DEBUG_JOB_NOT_FOUND_IN_DB",
-        debug: { jobId, currentUserId: user.id }
-      }, { status: 200 }); // Status 200 prevents Cloudflare Assets SPA 404 hijack
-    }
-
-    if (job.owner_user_id !== user.id) {
-      return json({
-        ok: false,
-        code: "DEBUG_JOB_OWNER_MISMATCH",
-        debug: { jobId, jobOwnerId: job.owner_user_id, currentUserId: user.id }
+        code: "JOB_NOT_FOUND",
+        message: "找不到此工作，或你沒有存取權。"
       }, { status: 200 });
     }
 
     if (job.status !== "completed") {
       return json({
         ok: false,
-        code: "DEBUG_JOB_NOT_COMPLETED",
-        debug: { jobId, jobStatus: job.status }
+        code: "JOB_NOT_READY",
+        message: "影片尚未輸出完成。"
       }, { status: 200 });
     }
 
-    if (!job.output_r2_key) {
-      return json({
-        ok: false,
-        code: "DEBUG_JOB_MISSING_R2_KEY",
-        debug: { jobId }
-      }, { status: 200 });
-    }
-
-    const object = await env.ASSETS_BUCKET.get(job.output_r2_key);
+    const object = job.output_r2_key ? await env.ASSETS_BUCKET.get(job.output_r2_key) : null;
     if (!object) {
       return json({
         ok: false,
-        code: "DEBUG_R2_OBJECT_NOT_FOUND",
-        debug: { jobId, outputR2Key: job.output_r2_key }
+        code: "OUTPUT_NOT_AVAILABLE",
+        message: "找不到輸出檔，請重新輸出。"
       }, { status: 200 });
     }
 
@@ -1468,11 +1504,16 @@ async function handleJobOutput(request, env, user, jobId) {
       }
     });
   } catch (error) {
+    // SECURITY: log internals server-side only; never return stack/message to the client.
+    console.error(JSON.stringify({
+      event: "job_output_error",
+      jobId,
+      message: error?.message || String(error)
+    }));
     return json({
       ok: false,
-      code: "DEBUG_EXC_THROWN",
-      message: error.message || "Internal error in handleJobOutput",
-      stack: error.stack || ""
+      code: "INTERNAL_ERROR",
+      message: "無法取得輸出檔，請稍後再試。"
     }, { status: 200 });
   }
 }
@@ -1721,6 +1762,8 @@ async function handleInviteRedemption(request, env, user) {
        SET display_name = ?, role = ?, plan = ?, status = 'active', updated_at = datetime('now')
        WHERE id = ?`
     ).bind(displayName, role, plan, user.id).run();
+
+    await bustUserCache(env, user.id);
 
     if (invite.customer_id) {
       await env.DB.prepare(
@@ -2907,6 +2950,8 @@ async function handleAdminAssignments(request, env, user) {
        SET display_name = ?, role = ?, plan = ?, status = ?, updated_at = datetime('now')
        WHERE id = ?`
     ).bind(displayName, role, plan, status, userId).run();
+
+    await bustUserCache(env, userId);
 
     return json({
       ok: true,
