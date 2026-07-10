@@ -2078,7 +2078,7 @@ AI Poster 團隊 敬上`);
       <div style="background-color: #f8fafc; border-left: 4px solid #3b82f6; padding: 16px; margin: 18px 0; border-radius: 4px;">
         <h4 style="margin: 0 0 8px 0; color: #1e293b; font-size: 15px;">👤 客戶基本資料</h4>
         <p style="margin: 4px 0; font-size: 14px;"><strong>客戶姓名:</strong> ${commerceEscapeHtml(customerName)}</p>
-        <p style="margin: 4px 0; font-size: 14px;"><strong>客戶 Email:</strong> <a href="mailto:${inviteEmail}" style="color: #2563eb; text-decoration: none;">${commerceEscapeHtml(inviteEmail)}</a></p>
+        <p style="margin: 4px 0; font-size: 14px;"><strong>客戶 Email:</strong> <a href="mailto:${commerceEscapeHtml(inviteEmail)}" style="color: #2563eb; text-decoration: none;">${commerceEscapeHtml(inviteEmail)}</a></p>
       </div>
 
       <div style="background-color: #f8fafc; border-left: 4px solid #64748b; padding: 16px; margin: 18px 0; border-radius: 4px;">

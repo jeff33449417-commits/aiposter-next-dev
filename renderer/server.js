@@ -3,9 +3,28 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { Transform } from "node:stream";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { timingSafeEqual, createHash } from "node:crypto";
+
+// SECURITY: enforce the upload cap on the ACTUAL byte stream, not just the
+// client-supplied Content-Length (which can be omitted or use chunked encoding).
+function makeUploadSizeCap(limitBytes) {
+  let received = 0;
+  return new Transform({
+    transform(chunk, _enc, cb) {
+      received += chunk.length;
+      if (received > limitBytes) {
+        const err = new Error("Source media is too large.");
+        err.code = "UPLOAD_TOO_LARGE";
+        cb(err);
+        return;
+      }
+      cb(null, chunk);
+    }
+  });
+}
 
 const port = Number(process.env.PORT || 8788);
 const rendererToken = process.env.RENDERER_TOKEN || "";
@@ -154,7 +173,15 @@ async function handleRender(request, response) {
   const outputPath = join(workDir, "output-h265.mp4");
 
   try {
-    await pipeline(request, createWriteStream(inputPath));
+    try {
+      await pipeline(request, makeUploadSizeCap(maxUploadBytes), createWriteStream(inputPath));
+    } catch (err) {
+      if (err && err.code === "UPLOAD_TOO_LARGE") {
+        sendJson(response, 413, { ok: false, message: "Source media is too large." });
+        return;
+      }
+      throw err;
+    }
     const inputInfo = await stat(inputPath);
     if (!inputInfo.size) {
       sendJson(response, 400, { ok: false, message: "Source media is empty." });
