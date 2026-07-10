@@ -425,6 +425,34 @@ function otpEmailHtml(code) {
   </div>`;
 }
 
+function rateLimitedResponse() {
+  return json({
+    ok: false,
+    code: "RATE_LIMITED",
+    message: "操作太頻繁，請稍後再試。",
+    retryAfterSeconds: 60
+  }, { status: 429, headers: { "retry-after": "60" } });
+}
+
+// Prefer Cloudflare's native Rate Limiting binding (atomic, not KV read-modify-
+// write racy) for the public auth endpoints; transparently fall back to the KV
+// limiter if the AUTH_RL binding is not configured. Returns true if limited.
+async function authRateLimited(env, request, keys) {
+  for (const key of keys) {
+    if (env.AUTH_RL && typeof env.AUTH_RL.limit === "function") {
+      try {
+        const { success } = await env.AUTH_RL.limit({ key });
+        if (!success) return true;
+      } catch (_) {
+        // Binding error: fall through to the KV fallback for this key.
+      }
+    }
+    const limited = await enforceRateLimit(env, request, { id: `auth:${key}` }, "auth_req", "AUTH_REQUEST_PER_MINUTE", 5);
+    if (limited) return true;
+  }
+  return false;
+}
+
 async function handleAuthRequest(request, env) {
   if (!authEnabled(env)) {
     return json({ ok: false, code: "AUTH_DISABLED", message: "Email 登入尚未啟用。" }, { status: 404 });
@@ -434,10 +462,8 @@ async function handleAuthRequest(request, env) {
   }
 
   const ip = clientIp(request) || "anonymous";
-  // Abuse control: cap OTP sends per IP AND per email so a public endpoint
-  // cannot be used to bomb arbitrary inboxes or enumerate accounts.
-  const ipLimited = await enforceRateLimit(env, request, { id: `authip:${ip}` }, "auth_req_ip", "AUTH_REQUEST_PER_MINUTE", 5);
-  if (ipLimited) return ipLimited;
+  // Abuse control: cap OTP sends per IP first (before touching the body).
+  if (await authRateLimited(env, request, [`reqip:${ip}`])) return rateLimitedResponse();
 
   let body;
   try { body = await request.json(); } catch (_) { body = {}; }
@@ -446,8 +472,8 @@ async function handleAuthRequest(request, env) {
     return json({ ok: false, code: "INVALID_EMAIL", message: "請輸入有效的 email。" }, { status: 400 });
   }
 
-  const emailLimited = await enforceRateLimit(env, request, { id: `authemail:${email}` }, "auth_req_email", "AUTH_REQUEST_PER_MINUTE", 3);
-  if (emailLimited) return emailLimited;
+  // ...then per email, so one inbox cannot be bombed regardless of source IP.
+  if (await authRateLimited(env, request, [`reqemail:${email}`])) return rateLimitedResponse();
 
   const code = generateOtpCode();
   const codeHash = base64urlEncode(await sha256Bytes(`${email}:${code}`));
@@ -468,6 +494,10 @@ async function handleAuthVerify(request, env) {
   if (request.method !== "POST") {
     return json({ ok: false, code: "METHOD_NOT_ALLOWED", message: "Only POST." }, { status: 405, headers: { allow: "POST" } });
   }
+
+  const ip = clientIp(request) || "anonymous";
+  // Rate-limit verify attempts per IP (per-email attempts are also capped below).
+  if (await authRateLimited(env, request, [`verifyip:${ip}`])) return rateLimitedResponse();
 
   let body;
   try { body = await request.json(); } catch (_) { body = {}; }

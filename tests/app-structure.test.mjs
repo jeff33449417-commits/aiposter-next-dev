@@ -156,7 +156,12 @@ test("self-serve email auth is present and flag-gated", () => {
   assert.match(worker, /OTP_TTL_SECONDS/);
   // Identity is resolved session-first (no longer only the Cf-Access header).
   assert.match(worker, /const email = await resolveIdentityEmail\(request, env\)/);
+  // Public auth endpoints use the native (atomic) Rate Limiting binding, with a
+  // KV fallback, instead of relying solely on the race-prone KV limiter.
+  assert.match(worker, /async function authRateLimited/);
+  assert.match(worker, /env\.AUTH_RL/);
   // SESSION_SECRET must never be committed as a plaintext var.
   const wrangler = read("wrangler.jsonc");
   assert.doesNotMatch(wrangler, /"SESSION_SECRET"/);
+  assert.match(wrangler, /"type": "ratelimit"/);
 });

@@ -55,6 +55,19 @@
   "triggers": {
     "crons": ["*/2 * * * *"]
   },
+  // Native (atomic) Rate Limiting binding for the public auth endpoints.
+  // Code falls back to the KV limiter if this binding is absent, so it is safe
+  // to remove; keeping it gives race-free abuse protection at scale.
+  "unsafe": {
+    "bindings": [
+      {
+        "name": "AUTH_RL",
+        "type": "ratelimit",
+        "namespace_id": "1001",
+        "simple": { "limit": 5, "period": 60 }
+      }
+    ]
+  },
   "workers_dev": false,
   "routes": [
     {
