@@ -798,7 +798,7 @@ async function handleJobs(request, env, user) {
     }, { status: 405, headers: { allow: "GET" } });
   }
 
-  await cleanupStaleExportJobs(env);
+  // Stale-job cleanup moved to the scheduled() Cron handler (was a D1 write per poll).
   const rows = await env.DB.prepare(
     `SELECT id, project_id, type, status, input_json, output_r2_key, error_message, created_at, updated_at
      FROM jobs
@@ -827,7 +827,7 @@ async function handleJobById(request, env, user, jobId) {
     }, { status: 405, headers: { allow: "GET" } });
   }
 
-  await cleanupStaleExportJobs(env);
+  // Stale-job cleanup moved to the scheduled() Cron handler (was a D1 write per poll).
   const job = await env.DB.prepare(
     `SELECT id, project_id, type, status, input_json, output_r2_key, error_message, created_at, updated_at
      FROM jobs
@@ -1126,15 +1126,17 @@ async function processRendererResponse(env, job, response) {
     return;
   }
 
-  const body = await response.arrayBuffer();
   if (!response.ok) {
-    const message = new TextDecoder().decode(body).slice(0, 500);
+    const message = (await response.text()).slice(0, 500);
     await markJob(env, job.id, "failed", message || `Renderer returned HTTP ${response.status}`);
     return;
   }
 
+  // Scalability: stream the response body straight to R2 rather than buffering
+  // the entire multi-MB MP4 in the Worker's 128 MB memory. Under concurrent
+  // exports the old arrayBuffer() path risked OOM.
   const outputKey = buildExportOutputKey(job);
-  await env.ASSETS_BUCKET.put(outputKey, body, {
+  await env.ASSETS_BUCKET.put(outputKey, response.body, {
     httpMetadata: {
       contentType: "video/mp4"
     },
@@ -3670,6 +3672,19 @@ function html(content, init = {}) {
 }
 
 export default {
+  async scheduled(event, env, ctx) {
+    // Scalability: stale-export cleanup runs here (Cron) instead of on every
+    // /api/jobs poll, which was issuing a D1 write per poll per active user.
+    ctx.waitUntil(
+      cleanupStaleExportJobs(env).catch((error) => {
+        console.error(JSON.stringify({
+          event: "scheduled_cleanup_error",
+          message: error?.message || String(error)
+        }));
+      })
+    );
+  },
+
   async queue(batch, env) {
     await Promise.all(batch.messages.map(async (message) => {
       try {

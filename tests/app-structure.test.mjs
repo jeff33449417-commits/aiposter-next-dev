@@ -65,7 +65,12 @@ test("backend enforces MP4 queue safeguards", () => {
 test("Cloudflare queue and D1 limits are configured", () => {
   const wrangler = read("wrangler.jsonc");
   const migration = read("migrations/0003_export_queue_limits.sql");
-  assert.match(wrangler, /"max_batch_size": 5/);
+  // Queue is tuned to the renderer's concurrency: one export per delivery and
+  // no more concurrent consumers than the renderer can transcode at once.
+  assert.match(wrangler, /"max_batch_size": 1/);
+  assert.match(wrangler, /"max_concurrency": 1/);
+  // Stale-export cleanup runs on a Cron schedule, not on every /api/jobs poll.
+  assert.match(wrangler, /"crons":/);
   assert.match(wrangler, /"EXPORT_BACKLOG_LIMIT": "50"/);
   assert.match(wrangler, /"MAX_VIDEO_UPLOAD_MB": "10"/);
   assert.match(wrangler, /"UPLOAD_RATE_LIMIT_PER_MINUTE": "12"/);

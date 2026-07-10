@@ -2407,14 +2407,33 @@ async function loadExportJobs() {
 function pollExportJob(jobId) {
     if (!jobId || exportJobPollers.has(jobId)) return;
 
+    // Scalability: at thousands of concurrent exporters a fixed 5s interval
+    // multiplies into a synchronized request/D1-write storm. Use exponential
+    // backoff (5s -> 30s), add jitter to de-synchronise clients, pause while
+    // the tab is backgrounded, and stop on terminal status.
     const expiresAt = Date.now() + 30 * 60 * 1000;
-    let poller = null;
+    const MIN_DELAY = 5000;
+    const MAX_DELAY = 30000;
+    let delay = MIN_DELAY;
+    let timer = null;
+    let stopped = false;
+
     const stopPolling = () => {
-        if (poller) clearInterval(poller);
+        stopped = true;
+        if (timer) clearTimeout(timer);
         exportJobPollers.delete(jobId);
     };
 
-    const pollOnce = async () => {
+    const schedule = () => {
+        if (stopped) return;
+        const jitter = delay * 0.2 * (Math.random() * 2 - 1);
+        timer = setTimeout(tick, Math.max(1000, Math.round(delay + jitter)));
+        delay = Math.min(MAX_DELAY, Math.round(delay * 1.5));
+    };
+
+    const tick = async () => {
+        if (stopped) return;
+        if (document.hidden) { schedule(); return; } // don't poll backgrounded tabs
         try {
             const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
             const data = await parseApiJson(response);
@@ -2422,6 +2441,7 @@ function pollExportJob(jobId) {
                 upsertExportJob(data.job);
                 if (['completed', 'failed', 'waiting_renderer'].includes(data.job.status)) {
                     stopPolling();
+                    return;
                 }
             }
         } catch (error) {
@@ -2431,13 +2451,13 @@ function pollExportJob(jobId) {
         if (Date.now() >= expiresAt) {
             stopPolling();
             renderExportJobs();
+            return;
         }
+        schedule();
     };
 
-    poller = setInterval(pollOnce, 5000);
-
-    exportJobPollers.set(jobId, poller);
-    pollOnce();
+    exportJobPollers.set(jobId, { stop: stopPolling });
+    tick();
 }
 
 function loadExportImage(src) {

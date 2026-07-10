@@ -41,11 +41,19 @@
     "consumers": [
       {
         "queue": "aiposter-jobs",
-        "max_batch_size": 5,
+        // One export per delivery, and no more concurrent consumers than the
+        // renderer can handle (currently 1 container = 1 concurrent transcode).
+        // Raise max_concurrency when you scale renderer containers horizontally.
+        "max_batch_size": 1,
         "max_batch_timeout": 5,
-        "max_retries": 1
+        "max_retries": 1,
+        "max_concurrency": 1
       }
     ]
+  },
+  // Stale-export cleanup runs here instead of on every /api/jobs poll.
+  "triggers": {
+    "crons": ["*/2 * * * *"]
   },
   "workers_dev": false,
   "routes": [
