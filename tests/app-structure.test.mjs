@@ -133,3 +133,30 @@ test("dy.com.tw commerce invite API keeps secrets server-side", () => {
   assert.match(migration, /UNIQUE\(source, idempotency_key\)/);
   assert.doesNotMatch(wrangler, /DY_COMMERCE_API_TOKEN/);
 });
+
+test("self-serve email auth is present and flag-gated", () => {
+  const worker = read("src/index.js");
+  // OTP + signed session endpoints.
+  assert.match(worker, /\/api\/auth\/request/);
+  assert.match(worker, /\/api\/auth\/verify/);
+  assert.match(worker, /\/api\/auth\/logout/);
+  assert.match(worker, /async function handleAuthRequest/);
+  assert.match(worker, /async function handleAuthVerify/);
+  // Gated on SESSION_SECRET; existing Access model preserved during transition.
+  assert.match(worker, /function authEnabled/);
+  assert.match(worker, /SESSION_SECRET/);
+  assert.match(worker, /function trustAccessHeader/);
+  assert.match(worker, /async function resolveIdentityEmail/);
+  // HMAC-signed session cookie (HttpOnly/Secure/SameSite), never a plaintext id.
+  assert.match(worker, /crypto\.subtle\.sign\("HMAC"/);
+  assert.match(worker, /HttpOnly; Secure; SameSite=Lax/);
+  // OTP is cryptographically random, stored hashed, attempt-limited, expiring.
+  assert.match(worker, /crypto\.getRandomValues/);
+  assert.match(worker, /OTP_MAX_ATTEMPTS/);
+  assert.match(worker, /OTP_TTL_SECONDS/);
+  // Identity is resolved session-first (no longer only the Cf-Access header).
+  assert.match(worker, /const email = await resolveIdentityEmail\(request, env\)/);
+  // SESSION_SECRET must never be committed as a plaintext var.
+  const wrangler = read("wrangler.jsonc");
+  assert.doesNotMatch(wrangler, /"SESSION_SECRET"/);
+});

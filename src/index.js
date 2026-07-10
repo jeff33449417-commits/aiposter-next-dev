@@ -287,6 +287,225 @@ function normalizeEmail(email) {
   return (email || "").trim().toLowerCase();
 }
 
+// ===================== Self-serve email auth (OTP + signed session) =====================
+// Flag-gated on SESSION_SECRET. When it is UNSET the app keeps the existing
+// Cloudflare Access header identity model unchanged (zero behavior change).
+// When SESSION_SECRET is set, /api/auth/* is enabled and identity is derived
+// from an HMAC-signed session cookie. During the transition the Access header
+// is still trusted so existing users keep working — UNLESS TRUST_ACCESS_HEADER
+// is "false", which you set once Cloudflare Access is removed and the app is
+// fully public (this closes the header-spoofing hole).
+const SESSION_COOKIE = "aip_session";
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
+const OTP_TTL_SECONDS = 600;                    // 10 minutes
+const OTP_MAX_ATTEMPTS = 5;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function authEnabled(env) {
+  return Boolean((env.SESSION_SECRET || "").trim());
+}
+
+function trustAccessHeader(env) {
+  return String(env.TRUST_ACCESS_HEADER || "true").trim().toLowerCase() !== "false";
+}
+
+function base64urlEncode(bytes) {
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let s = "";
+  for (const b of arr) s += String.fromCharCode(b);
+  return btoa(s).replace(/=+$/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+function base64urlDecodeToString(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
+  const bin = atob(padded);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+async function hmacSignBase64url(secret, data) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  return base64urlEncode(sig);
+}
+
+async function createSessionToken(env, email) {
+  const payload = base64urlEncode(new TextEncoder().encode(JSON.stringify({
+    email,
+    exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS
+  })));
+  const sig = await hmacSignBase64url((env.SESSION_SECRET || "").trim(), payload);
+  return `${payload}.${sig}`;
+}
+
+async function verifySessionToken(env, token) {
+  if (!token || token.indexOf(".") === -1) return "";
+  const [payload, sig] = token.split(".");
+  const expected = await hmacSignBase64url((env.SESSION_SECRET || "").trim(), payload);
+  if (!(await timingSafeSecretEqual(sig, expected))) return "";
+  try {
+    const claims = JSON.parse(base64urlDecodeToString(payload));
+    if (!claims.email || !claims.exp || claims.exp < Math.floor(Date.now() / 1000)) return "";
+    return normalizeEmail(claims.email);
+  } catch (_) {
+    return "";
+  }
+}
+
+function parseCookies(request) {
+  const out = {};
+  const header = request.headers.get("cookie") || "";
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx > -1) out[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
+  }
+  return out;
+}
+
+async function getSessionEmail(request, env) {
+  if (!authEnabled(env)) return "";
+  return verifySessionToken(env, parseCookies(request)[SESSION_COOKIE]);
+}
+
+function sessionCookie(value, maxAgeSeconds) {
+  return `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
+}
+
+// Identity source of truth: prefer the signed session; fall back to the Access
+// header only while it is trusted (transition period). Used by getOrCreateUser.
+async function resolveIdentityEmail(request, env) {
+  if (authEnabled(env)) {
+    const sessionEmail = await getSessionEmail(request, env);
+    if (sessionEmail) return sessionEmail;
+  }
+  if (trustAccessHeader(env)) {
+    return normalizeEmail(getAccessEmail(request));
+  }
+  return "";
+}
+
+async function sendAuthEmail(env, to, subject, html) {
+  const senderEmail = (env.AUTH_SENDER_EMAIL || env.OWNER_EMAIL || "noreply@aiposter.jp").trim();
+  try {
+    const res = await fetch("https://api.mailchannels.net/tx/v1/send", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: to }] }],
+        from: { email: senderEmail, name: "AI Poster" },
+        subject,
+        content: [{ type: "text/html", value: html }]
+      })
+    });
+    return res.ok;
+  } catch (_) {
+    return false;
+  }
+}
+
+function generateOtpCode() {
+  const arr = new Uint32Array(1);
+  crypto.getRandomValues(arr);
+  return String(100000 + (arr[0] % 900000));
+}
+
+function otpEmailHtml(code) {
+  return `<div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: auto; padding: 24px;">
+    <h2 style="color:#1d2554; margin:0 0 12px;">AI Poster 登入驗證碼</h2>
+    <p style="color:#334155; margin:0 0 8px;">你的一次性驗證碼:</p>
+    <p style="font-size: 34px; font-weight: 800; letter-spacing: 8px; color:#1d2554; margin: 8px 0;">${code}</p>
+    <p style="color:#64748b; font-size: 13px; margin-top: 16px;">10 分鐘內有效。若非你本人操作，請忽略此信。</p>
+  </div>`;
+}
+
+async function handleAuthRequest(request, env) {
+  if (!authEnabled(env)) {
+    return json({ ok: false, code: "AUTH_DISABLED", message: "Email 登入尚未啟用。" }, { status: 404 });
+  }
+  if (request.method !== "POST") {
+    return json({ ok: false, code: "METHOD_NOT_ALLOWED", message: "Only POST." }, { status: 405, headers: { allow: "POST" } });
+  }
+
+  const ip = clientIp(request) || "anonymous";
+  // Abuse control: cap OTP sends per IP AND per email so a public endpoint
+  // cannot be used to bomb arbitrary inboxes or enumerate accounts.
+  const ipLimited = await enforceRateLimit(env, request, { id: `authip:${ip}` }, "auth_req_ip", "AUTH_REQUEST_PER_MINUTE", 5);
+  if (ipLimited) return ipLimited;
+
+  let body;
+  try { body = await request.json(); } catch (_) { body = {}; }
+  const email = normalizeEmail(body.email);
+  if (!EMAIL_RE.test(email) || email.length > 254) {
+    return json({ ok: false, code: "INVALID_EMAIL", message: "請輸入有效的 email。" }, { status: 400 });
+  }
+
+  const emailLimited = await enforceRateLimit(env, request, { id: `authemail:${email}` }, "auth_req_email", "AUTH_REQUEST_PER_MINUTE", 3);
+  if (emailLimited) return emailLimited;
+
+  const code = generateOtpCode();
+  const codeHash = base64urlEncode(await sha256Bytes(`${email}:${code}`));
+  await env.APP_KV.put(`otp:${email}`, JSON.stringify({ codeHash, attempts: 0 }), { expirationTtl: OTP_TTL_SECONDS });
+
+  const sent = await sendAuthEmail(env, email, "AI Poster 登入驗證碼", otpEmailHtml(code));
+  if (!sent) {
+    return json({ ok: false, code: "EMAIL_SEND_FAILED", message: "驗證信寄送失敗，請稍後再試。" }, { status: 502 });
+  }
+  // Do not reveal whether the address is new/existing — always the same reply.
+  return json({ ok: true, message: "驗證碼已寄出，請至 email 查收。" });
+}
+
+async function handleAuthVerify(request, env) {
+  if (!authEnabled(env)) {
+    return json({ ok: false, code: "AUTH_DISABLED", message: "Email 登入尚未啟用。" }, { status: 404 });
+  }
+  if (request.method !== "POST") {
+    return json({ ok: false, code: "METHOD_NOT_ALLOWED", message: "Only POST." }, { status: 405, headers: { allow: "POST" } });
+  }
+
+  let body;
+  try { body = await request.json(); } catch (_) { body = {}; }
+  const email = normalizeEmail(body.email);
+  const code = String(body.code || "").trim();
+  if (!EMAIL_RE.test(email) || !/^\d{6}$/.test(code)) {
+    return json({ ok: false, code: "INVALID_INPUT", message: "email 或驗證碼格式錯誤。" }, { status: 400 });
+  }
+
+  const record = await env.APP_KV.get(`otp:${email}`, "json");
+  if (!record) {
+    return json({ ok: false, code: "OTP_EXPIRED", message: "驗證碼已過期或不存在，請重新取得。" }, { status: 400 });
+  }
+  if ((record.attempts || 0) >= OTP_MAX_ATTEMPTS) {
+    await env.APP_KV.delete(`otp:${email}`);
+    return json({ ok: false, code: "OTP_LOCKED", message: "嘗試次數過多，請重新取得驗證碼。" }, { status: 429 });
+  }
+
+  const codeHash = base64urlEncode(await sha256Bytes(`${email}:${code}`));
+  if (!(await timingSafeSecretEqual(codeHash, record.codeHash))) {
+    await env.APP_KV.put(`otp:${email}`, JSON.stringify({
+      codeHash: record.codeHash,
+      attempts: (record.attempts || 0) + 1
+    }), { expirationTtl: OTP_TTL_SECONDS });
+    return json({ ok: false, code: "OTP_INVALID", message: "驗證碼不正確。" }, { status: 400 });
+  }
+
+  await env.APP_KV.delete(`otp:${email}`);
+  const token = await createSessionToken(env, email);
+  return json({ ok: true, email }, {
+    headers: { "set-cookie": sessionCookie(token, SESSION_TTL_SECONDS) }
+  });
+}
+
+function handleAuthLogout() {
+  return json({ ok: true }, { headers: { "set-cookie": sessionCookie("", 0) } });
+}
+
 function normalizeInviteCode(code) {
   return (code || "")
     .trim()
@@ -378,7 +597,7 @@ async function bustUserCache(env, emailOrId) {
 }
 
 async function getOrCreateUser(request, env) {
-  const email = normalizeEmail(getAccessEmail(request));
+  const email = await resolveIdentityEmail(request, env);
   if (!email) {
     return null;
   }
@@ -3717,6 +3936,26 @@ export default {
         ok: true,
         service: "aiposter-new",
         env: env.APP_ENV || "production"
+      });
+    }
+
+    // Self-serve email auth (enabled only when SESSION_SECRET is set).
+    if (url.pathname === "/api/auth/request") {
+      return handleAuthRequest(request, env);
+    }
+    if (url.pathname === "/api/auth/verify") {
+      return handleAuthVerify(request, env);
+    }
+    if (url.pathname === "/api/auth/logout") {
+      return handleAuthLogout();
+    }
+    if (url.pathname === "/api/auth/session") {
+      const email = await resolveIdentityEmail(request, env);
+      return json({
+        ok: true,
+        authenticated: Boolean(email),
+        email: email || null,
+        authMode: authEnabled(env) ? "email" : "access"
       });
     }
 

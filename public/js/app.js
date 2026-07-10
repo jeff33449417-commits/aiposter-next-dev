@@ -3287,3 +3287,75 @@ loadUserProfile();
 setupViewportGestures(document.getElementById('posterPreview'));
 setupViewportGestures(document.getElementById('imageEditorPreview'));
 window.addEventListener('resize', applyScreenPreviewSize);
+
+// ===== Self-serve email login gate =====
+// Only activates when the backend reports authMode "email" (SESSION_SECRET set)
+// and the visitor has no valid session. Otherwise the app behaves as before.
+(async function emailLoginGate() {
+    let session;
+    try {
+        session = await (await fetch('/api/auth/session')).json();
+    } catch (_) {
+        return; // network issue — don't block the app
+    }
+    if (!session || session.authMode !== 'email' || session.authenticated) return;
+
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const overlay = document.createElement('div');
+    overlay.setAttribute('role', 'dialog');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#fbf8ec;display:flex;align-items:center;justify-content:center;padding:20px;font-family:-apple-system,sans-serif;';
+    overlay.innerHTML = `
+      <div style="width:100%;max-width:360px;background:#fff;border-radius:16px;padding:28px;box-shadow:0 10px 40px rgba(29,37,84,.12);">
+        <h2 style="margin:0 0 6px;color:#1d2554;font-size:22px;">登入 AI Poster</h2>
+        <p style="margin:0 0 18px;color:#64748b;font-size:14px;">輸入 email，我們會寄一組 6 位數驗證碼給你。</p>
+        <div id="loginStep1">
+          <input id="loginEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"
+            style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid #d7dbec;border-radius:10px;font-size:16px;">
+          <button id="loginSend" style="width:100%;margin-top:12px;padding:12px;border:0;border-radius:10px;background:#1d2554;color:#fff;font-size:16px;font-weight:700;cursor:pointer;">寄送驗證碼</button>
+        </div>
+        <div id="loginStep2" style="display:none;">
+          <input id="loginCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位數驗證碼"
+            style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid #d7dbec;border-radius:10px;font-size:20px;letter-spacing:6px;text-align:center;">
+          <button id="loginVerify" style="width:100%;margin-top:12px;padding:12px;border:0;border-radius:10px;background:#1d2554;color:#fff;font-size:16px;font-weight:700;cursor:pointer;">登入</button>
+          <button id="loginBack" style="width:100%;margin-top:8px;padding:8px;border:0;border-radius:10px;background:transparent;color:#64748b;font-size:13px;cursor:pointer;">用別的 email</button>
+        </div>
+        <p id="loginMsg" style="margin:14px 0 0;font-size:13px;min-height:18px;"></p>
+      </div>`;
+    document.body.appendChild(overlay);
+    document.body.style.overflow = 'hidden';
+
+    const $ = (id) => overlay.querySelector('#' + id);
+    const setMsg = (t, ok) => { $('loginMsg').textContent = t; $('loginMsg').style.color = ok ? '#16a34a' : '#dc2626'; };
+    const post = async (path, payload) => {
+        const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+        return { ok: r.ok, data: await r.json().catch(() => ({})) };
+    };
+
+    $('loginSend').onclick = async () => {
+        const email = $('loginEmail').value.trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setMsg('請輸入有效的 email。', false);
+        $('loginSend').disabled = true; setMsg('寄送中…', true);
+        const { ok, data } = await post('/api/auth/request', { email });
+        $('loginSend').disabled = false;
+        if (!ok || !data.ok) return setMsg(data.message || '寄送失敗，請稍後再試。', false);
+        overlay.dataset.email = email;
+        $('loginStep1').style.display = 'none';
+        $('loginStep2').style.display = 'block';
+        setMsg('驗證碼已寄到 ' + esc(email), true);
+        $('loginCode').focus();
+    };
+    $('loginVerify').onclick = async () => {
+        const code = $('loginCode').value.trim();
+        if (!/^\d{6}$/.test(code)) return setMsg('請輸入 6 位數驗證碼。', false);
+        $('loginVerify').disabled = true; setMsg('驗證中…', true);
+        const { ok, data } = await post('/api/auth/verify', { email: overlay.dataset.email, code });
+        if (ok && data.ok) { setMsg('登入成功，載入中…', true); location.reload(); return; }
+        $('loginVerify').disabled = false;
+        setMsg(data.message || '驗證失敗。', false);
+    };
+    $('loginBack').onclick = () => {
+        $('loginStep2').style.display = 'none';
+        $('loginStep1').style.display = 'block';
+        setMsg('', true);
+    };
+})();
