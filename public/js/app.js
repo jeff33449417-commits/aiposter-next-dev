@@ -2592,13 +2592,38 @@ function createExportFrameLayout(canvas) {
     return { scaleY, items };
 }
 
+// Export animation windows MUST match the CSS animation durations in
+// styles.css (.effect-* rules) so exported layers animate at the exact same
+// speed/timing as the live preview. Previously the export used duration/3
+// (~1s for most clips) while CSS runs ~0.85s, so layers settled slightly late
+// in the exported video. Keep this in sync with styles.css.
+const DEFAULT_EFFECT_DURATION = 0.85;
+const EFFECT_DURATIONS = {
+    'effect-typewriter': 1.0,
+    'effect-fade-up': 0.85,
+    'effect-mask-reveal': 0.85,
+    'effect-light-sweep': 0.9,
+    'effect-zoom-in': 0.85,
+    'effect-slide-in': 0.85,
+    'effect-rotate-in': 0.85,
+    'effect-fade-out': 0.9,
+    'effect-slide-out': 0.85,
+    'effect-glitch-out': 0.75,
+    'effect-particle': 0.9,
+    'effect-stretch-out': 0.8,
+    'effect-zoom-out': 0.8,
+    'effect-spin-out': 0.8,
+    'effect-wipe-out': 0.85
+};
+
 function exportEffectOpacity(clip, elapsedSeconds) {
     const row = clip.closest('.material-row');
     const start = parseFloat(clip.dataset.start) || 0;
     const duration = parseFloat(clip.dataset.duration) || TOTAL_SECONDS;
     const localTime = elapsedSeconds - start;
     const remaining = start + duration - elapsedSeconds;
-    const effectWindow = Math.min(1, Math.max(0.25, duration / 3));
+    const entryWindow = EFFECT_DURATIONS[getRowEffect(row, 0)] || DEFAULT_EFFECT_DURATION;
+    const exitWindow = EFFECT_DURATIONS[getRowEffect(row, 1)] || DEFAULT_EFFECT_DURATION;
     
     let opacity = 1;
     let offsetX = 0;
@@ -2616,8 +2641,8 @@ function exportEffectOpacity(clip, elapsedSeconds) {
     const entryEffect = getRowEffect(row, 0);
     const exitEffect = getRowEffect(row, 1);
 
-    if (entryEffect && localTime <= effectWindow) {
-        const progress = clamp(localTime / effectWindow, 0, 1);
+    if (entryEffect && localTime <= entryWindow) {
+        const progress = clamp(localTime / entryWindow, 0, 1);
         if (entryEffect === 'effect-typewriter') {
             typewriterProgress = progress;
             clipLeftToRight = progress;
@@ -2644,8 +2669,8 @@ function exportEffectOpacity(clip, elapsedSeconds) {
         }
     }
 
-    if (exitEffect && remaining <= effectWindow) {
-        const progress = clamp(remaining / effectWindow, 0, 1);
+    if (exitEffect && remaining <= exitWindow) {
+        const progress = clamp(remaining / exitWindow, 0, 1);
         if (exitEffect === 'effect-fade-out') {
             opacity *= progress;
         } else if (exitEffect === 'effect-slide-out') {
