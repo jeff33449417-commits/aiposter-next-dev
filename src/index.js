@@ -392,8 +392,35 @@ async function resolveIdentityEmail(request, env) {
 }
 
 async function sendAuthEmail(env, to, subject, html) {
-  const senderEmail = (env.AUTH_SENDER_EMAIL || env.OWNER_EMAIL || "noreply@aiposter.jp").trim();
+  const resendKey = (env.RESEND_API_KEY || "").trim();
+  // The "from" address MUST be on a domain verified in the email provider.
+  // For Resend that is the verified send.aiposter.jp; override via AUTH_SENDER_EMAIL.
+  const from = (env.AUTH_SENDER_EMAIL || "AI Poster <noreply@send.aiposter.jp>").trim();
+
   try {
+    // Preferred path: Resend (DKIM/SPF-verified domain send.aiposter.jp).
+    if (resendKey) {
+      const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "authorization": `Bearer ${resendKey}`
+        },
+        body: JSON.stringify({ from, to: [to], subject, html })
+      });
+      if (!res.ok) {
+        console.error(JSON.stringify({
+          event: "auth_email_send_failed",
+          provider: "resend",
+          status: res.status,
+          detail: (await res.text().catch(() => "")).slice(0, 300)
+        }));
+      }
+      return res.ok;
+    }
+
+    // Fallback: MailChannels (only delivers if its own domain lockdown is set).
+    const senderEmail = (env.AUTH_SENDER_EMAIL || env.OWNER_EMAIL || "noreply@aiposter.jp").trim();
     const res = await fetch("https://api.mailchannels.net/tx/v1/send", {
       method: "POST",
       headers: { "content-type": "application/json" },
