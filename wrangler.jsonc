@@ -88,6 +88,11 @@
     "MAX_VIDEO_UPLOAD_MB": "10",
     "RATE_LIMIT_WINDOW_SECONDS": "60",
     "UPLOAD_RATE_LIMIT_PER_MINUTE": "12",
-    "EXPORT_RATE_LIMIT_PER_MINUTE": "6"
+    "EXPORT_RATE_LIMIT_PER_MINUTE": "6",
+    // Ignore the Cloudflare Access header and require the signed email session.
+    // Set to "false" once the site is public (Access removed) — this closes the
+    // header-spoofing hole. While Access is still in front it just forces email
+    // login (safe: Access still gates who can reach the site).
+    "TRUST_ACCESS_HEADER": "false"
   }
 }
