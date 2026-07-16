@@ -480,7 +480,67 @@ async function authRateLimited(env, request, keys) {
   return false;
 }
 
-async function handleAuthRequest(request, env) {
+// ---- Per-user login passwords (env allowlist + admin/invite-provisioned) ----
+// Env accounts: AUTH_ACCOUNTS = "email1:password1,email2:password2" (a secret).
+// Invited accounts: hashed password rows in the auth_credentials D1 table.
+function parseAuthAccounts(env) {
+  const map = new Map();
+  const raw = (env.AUTH_ACCOUNTS || "").trim();
+  if (!raw) return map;
+  for (const pair of raw.split(",")) {
+    const idx = pair.indexOf(":");
+    if (idx > 0) {
+      const email = normalizeEmail(pair.slice(0, idx));
+      const password = pair.slice(idx + 1);
+      if (email && password) map.set(email, password);
+    }
+  }
+  return map;
+}
+
+function base64urlDecodeToBytes(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
+  const bin = atob(padded);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+async function hashPassword(password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, key, 256);
+  return `pbkdf2$100000$${base64urlEncode(salt)}$${base64urlEncode(new Uint8Array(bits))}`;
+}
+
+async function verifyPasswordHash(password, stored) {
+  const parts = String(stored || "").split("$");
+  if (parts.length !== 4 || parts[0] !== "pbkdf2") return false;
+  const iterations = Number(parts[1]) || 100000;
+  const salt = base64urlDecodeToBytes(parts[2]);
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, key, 256);
+  return timingSafeSecretEqual(base64urlEncode(new Uint8Array(bits)), parts[3]);
+}
+
+// True if (email, password) is a valid account. Constant-time for env accounts.
+async function verifyLogin(env, email, password) {
+  const accounts = parseAuthAccounts(env);
+  if (accounts.has(email)) {
+    return timingSafeSecretEqual(password, accounts.get(email));
+  }
+  const cred = await env.DB.prepare(
+    "SELECT password_hash FROM auth_credentials WHERE email = ?"
+  ).bind(email).first();
+  if (cred && cred.password_hash) {
+    return verifyPasswordHash(password, cred.password_hash);
+  }
+  return false;
+}
+
+// Login step 1: email + password. Only a correct password for an allowed
+// account triggers the OTP send (so the password gates the OTP flow).
+async function handleAuthLogin(request, env) {
   if (!authEnabled(env)) {
     return json({ ok: false, code: "AUTH_DISABLED", message: "Email 登入尚未啟用。" }, { status: 404 });
   }
@@ -489,18 +549,23 @@ async function handleAuthRequest(request, env) {
   }
 
   const ip = clientIp(request) || "anonymous";
-  // Abuse control: cap OTP sends per IP first (before touching the body).
-  if (await authRateLimited(env, request, [`reqip:${ip}`])) return rateLimitedResponse();
+  if (await authRateLimited(env, request, [`loginip:${ip}`])) return rateLimitedResponse();
 
   let body;
   try { body = await request.json(); } catch (_) { body = {}; }
   const email = normalizeEmail(body.email);
-  if (!EMAIL_RE.test(email) || email.length > 254) {
-    return json({ ok: false, code: "INVALID_EMAIL", message: "請輸入有效的 email。" }, { status: 400 });
+  const password = String(body.password || "");
+  if (!EMAIL_RE.test(email) || email.length > 254 || !password) {
+    return json({ ok: false, code: "INVALID_INPUT", message: "請輸入 email 與密碼。" }, { status: 400 });
   }
 
-  // ...then per email, so one inbox cannot be bombed regardless of source IP.
-  if (await authRateLimited(env, request, [`reqemail:${email}`])) return rateLimitedResponse();
+  if (await authRateLimited(env, request, [`loginemail:${email}`])) return rateLimitedResponse();
+
+  const ok = await verifyLogin(env, email, password);
+  if (!ok) {
+    // Generic — do not reveal whether the email exists or the password was wrong.
+    return json({ ok: false, code: "LOGIN_FAILED", message: "email 或密碼不正確，或此帳號未獲授權。" }, { status: 401 });
+  }
 
   const code = generateOtpCode();
   const codeHash = base64urlEncode(await sha256Bytes(`${email}:${code}`));
@@ -510,8 +575,30 @@ async function handleAuthRequest(request, env) {
   if (!sent) {
     return json({ ok: false, code: "EMAIL_SEND_FAILED", message: "驗證信寄送失敗，請稍後再試。" }, { status: 502 });
   }
-  // Do not reveal whether the address is new/existing — always the same reply.
-  return json({ ok: true, message: "驗證碼已寄出，請至 email 查收。" });
+  return json({ ok: true, stage: "otp", message: "密碼正確，驗證碼已寄出，請至 email 查收。" });
+}
+
+// Admin provisions/updates an invited account's login password (hashed in D1).
+async function handleAdminCredentials(request, env, user) {
+  const forbidden = requireAdmin(user);
+  if (forbidden) return forbidden;
+  if (request.method !== "POST") {
+    return json({ ok: false, code: "METHOD_NOT_ALLOWED", message: "Only POST." }, { status: 405, headers: { allow: "POST" } });
+  }
+  let body;
+  try { body = await request.json(); } catch (_) { body = {}; }
+  const email = normalizeEmail(body.email);
+  const password = String(body.password || "");
+  if (!EMAIL_RE.test(email) || password.length < 6) {
+    return json({ ok: false, code: "INVALID_INPUT", message: "email 格式錯誤，或密碼少於 6 碼。" }, { status: 400 });
+  }
+  const hash = await hashPassword(password);
+  await env.DB.prepare(
+    `INSERT INTO auth_credentials (email, password_hash, created_at, updated_at)
+     VALUES (?, ?, datetime('now'), datetime('now'))
+     ON CONFLICT(email) DO UPDATE SET password_hash = excluded.password_hash, updated_at = datetime('now')`
+  ).bind(email, hash).run();
+  return json({ ok: true, email });
 }
 
 async function handleAuthVerify(request, env) {
@@ -3996,9 +4083,10 @@ export default {
       });
     }
 
-    // Self-serve email auth (enabled only when SESSION_SECRET is set).
-    if (url.pathname === "/api/auth/request") {
-      return handleAuthRequest(request, env);
+    // Email auth (enabled only when SESSION_SECRET is set): email + password
+    // (allowlist / invite) gates the OTP send; OTP verify issues the session.
+    if (url.pathname === "/api/auth/login") {
+      return handleAuthLogin(request, env);
     }
     if (url.pathname === "/api/auth/verify") {
       return handleAuthVerify(request, env);
@@ -4054,6 +4142,11 @@ export default {
     if (url.pathname === "/api/admin/assignments") {
       const user = await getOrCreateUser(request, env);
       return handleAdminAssignments(request, env, user);
+    }
+
+    if (url.pathname === "/api/admin/credentials") {
+      const user = await getOrCreateUser(request, env);
+      return handleAdminCredentials(request, env, user);
     }
 
     if (url.pathname === "/api/admin/commercial") {

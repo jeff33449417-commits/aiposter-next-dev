@@ -136,12 +136,20 @@ test("dy.com.tw commerce invite API keeps secrets server-side", () => {
 
 test("self-serve email auth is present and flag-gated", () => {
   const worker = read("src/index.js");
-  // OTP + signed session endpoints.
-  assert.match(worker, /\/api\/auth\/request/);
+  // Password-gated login (email + password) then OTP + signed session.
+  assert.match(worker, /\/api\/auth\/login/);
   assert.match(worker, /\/api\/auth\/verify/);
   assert.match(worker, /\/api\/auth\/logout/);
-  assert.match(worker, /async function handleAuthRequest/);
+  assert.match(worker, /async function handleAuthLogin/);
   assert.match(worker, /async function handleAuthVerify/);
+  // Per-user passwords: env allowlist (AUTH_ACCOUNTS) + PBKDF2-hashed D1 creds.
+  assert.match(worker, /function parseAuthAccounts/);
+  assert.match(worker, /async function verifyLogin/);
+  assert.match(worker, /async function hashPassword/);
+  assert.match(worker, /PBKDF2/);
+  assert.match(worker, /auth_credentials/);
+  // The OTP-only (password-bypassing) request endpoint must be gone.
+  assert.doesNotMatch(worker, /"\/api\/auth\/request"/);
   // Gated on SESSION_SECRET; existing Access model preserved during transition.
   assert.match(worker, /function authEnabled/);
   assert.match(worker, /SESSION_SECRET/);

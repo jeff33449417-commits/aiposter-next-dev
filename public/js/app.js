@@ -3332,11 +3332,13 @@ window.addEventListener('resize', applyScreenPreviewSize);
     overlay.innerHTML = `
       <div style="width:100%;max-width:360px;background:#fff;border-radius:16px;padding:28px;box-shadow:0 10px 40px rgba(29,37,84,.12);">
         <h2 style="margin:0 0 6px;color:#1d2554;font-size:22px;">登入 AI Poster</h2>
-        <p style="margin:0 0 18px;color:#64748b;font-size:14px;">輸入 email，我們會寄一組 6 位數驗證碼給你。</p>
+        <p style="margin:0 0 18px;color:#64748b;font-size:14px;">輸入 email 與密碼，驗證後我們會寄一組 6 位數驗證碼給你。</p>
         <div id="loginStep1">
           <input id="loginEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"
             style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid #d7dbec;border-radius:10px;font-size:16px;">
-          <button id="loginSend" style="width:100%;margin-top:12px;padding:12px;border:0;border-radius:10px;background:#1d2554;color:#fff;font-size:16px;font-weight:700;cursor:pointer;">寄送驗證碼</button>
+          <input id="loginPassword" type="password" autocomplete="current-password" placeholder="密碼"
+            style="width:100%;box-sizing:border-box;margin-top:10px;padding:12px 14px;border:1px solid #d7dbec;border-radius:10px;font-size:16px;">
+          <button id="loginSend" style="width:100%;margin-top:12px;padding:12px;border:0;border-radius:10px;background:#1d2554;color:#fff;font-size:16px;font-weight:700;cursor:pointer;">下一步（寄驗證碼）</button>
         </div>
         <div id="loginStep2" style="display:none;">
           <input id="loginCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位數驗證碼"
@@ -3358,15 +3360,18 @@ window.addEventListener('resize', applyScreenPreviewSize);
 
     $('loginSend').onclick = async () => {
         const email = $('loginEmail').value.trim().toLowerCase();
+        const password = $('loginPassword').value;
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setMsg('請輸入有效的 email。', false);
-        $('loginSend').disabled = true; setMsg('寄送中…', true);
-        const { ok, data } = await post('/api/auth/request', { email });
+        if (!password) return setMsg('請輸入密碼。', false);
+        $('loginSend').disabled = true; setMsg('驗證中…', true);
+        // email + password checked server-side; only then is an OTP sent.
+        const { ok, data } = await post('/api/auth/login', { email, password });
         $('loginSend').disabled = false;
-        if (!ok || !data.ok) return setMsg(data.message || '寄送失敗，請稍後再試。', false);
+        if (!ok || !data.ok) return setMsg(data.message || 'email 或密碼不正確。', false);
         overlay.dataset.email = email;
         $('loginStep1').style.display = 'none';
         $('loginStep2').style.display = 'block';
-        setMsg('驗證碼已寄到 ' + esc(email), true);
+        setMsg('密碼正確，驗證碼已寄到 ' + esc(email), true);
         $('loginCode').focus();
     };
     $('loginVerify').onclick = async () => {
