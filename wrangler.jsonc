@@ -7,7 +7,11 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    // Without this, the SPA fallback answers browser navigations to /admin with
+    // index.html and the Worker never runs — the admin page was unreachable.
+    // These paths must hit the Worker before the asset router.
+    "run_worker_first": ["/admin", "/admin/*", "/api/*"]
   },
   "observability": {
     "enabled": true
