@@ -3339,6 +3339,17 @@ window.addEventListener('resize', applyScreenPreviewSize);
           <input id="loginPassword" type="password" autocomplete="current-password" placeholder="密碼"
             style="width:100%;box-sizing:border-box;margin-top:10px;padding:12px 14px;border:1px solid #d7dbec;border-radius:10px;font-size:16px;">
           <button id="loginSend" style="width:100%;margin-top:12px;padding:12px;border:0;border-radius:10px;background:#1d2554;color:#fff;font-size:16px;font-weight:700;cursor:pointer;">下一步（寄驗證碼）</button>
+          <button id="toReg" style="width:100%;margin-top:8px;padding:8px;border:0;border-radius:10px;background:transparent;color:#64748b;font-size:13px;cursor:pointer;">第一次使用？用邀請碼註冊</button>
+        </div>
+        <div id="loginStepReg" style="display:none;">
+          <input id="regCode" type="text" autocomplete="off" placeholder="邀請碼"
+            style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid #d7dbec;border-radius:10px;font-size:16px;letter-spacing:2px;text-transform:uppercase;">
+          <input id="regEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"
+            style="width:100%;box-sizing:border-box;margin-top:10px;padding:12px 14px;border:1px solid #d7dbec;border-radius:10px;font-size:16px;">
+          <input id="regPassword" type="password" autocomplete="new-password" placeholder="設定你的密碼（至少 6 碼）"
+            style="width:100%;box-sizing:border-box;margin-top:10px;padding:12px 14px;border:1px solid #d7dbec;border-radius:10px;font-size:16px;">
+          <button id="regSend" style="width:100%;margin-top:12px;padding:12px;border:0;border-radius:10px;background:#1d2554;color:#fff;font-size:16px;font-weight:700;cursor:pointer;">註冊（寄驗證碼）</button>
+          <button id="toLogin" style="width:100%;margin-top:8px;padding:8px;border:0;border-radius:10px;background:transparent;color:#64748b;font-size:13px;cursor:pointer;">已有帳號？返回登入</button>
         </div>
         <div id="loginStep2" style="display:none;">
           <input id="loginCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位數驗證碼"
@@ -3387,5 +3398,36 @@ window.addEventListener('resize', applyScreenPreviewSize);
         $('loginStep2').style.display = 'none';
         $('loginStep1').style.display = 'block';
         setMsg('', true);
+    };
+
+    // ---- Invite-code self-registration ----
+    $('toReg').onclick = () => {
+        $('loginStep1').style.display = 'none';
+        $('loginStepReg').style.display = 'block';
+        setMsg('請輸入你收到的邀請碼。', true);
+        $('regCode').focus();
+    };
+    $('toLogin').onclick = () => {
+        $('loginStepReg').style.display = 'none';
+        $('loginStep1').style.display = 'block';
+        setMsg('', true);
+    };
+    $('regSend').onclick = async () => {
+        const code = $('regCode').value.trim().toUpperCase();
+        const email = $('regEmail').value.trim().toLowerCase();
+        const password = $('regPassword').value;
+        if (!code) return setMsg('請輸入邀請碼。', false);
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setMsg('請輸入有效的 email。', false);
+        if (!password || password.length < 6) return setMsg('密碼至少 6 碼。', false);
+        $('regSend').disabled = true; setMsg('驗證邀請碼…', true);
+        // The invite is checked server-side first; an invalid code sends no OTP.
+        const { ok, data } = await post('/api/auth/register', { code, email, password });
+        $('regSend').disabled = false;
+        if (!ok || !data.ok) return setMsg(data.message || '邀請碼無效。', false);
+        overlay.dataset.email = email;
+        $('loginStepReg').style.display = 'none';
+        $('loginStep2').style.display = 'block';
+        setMsg('邀請碼有效，驗證碼已寄到 ' + esc(email), true);
+        $('loginCode').focus();
     };
 })();

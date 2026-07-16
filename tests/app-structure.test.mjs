@@ -150,6 +150,16 @@ test("self-serve email auth is present and flag-gated", () => {
   assert.match(worker, /auth_credentials/);
   // The OTP-only (password-bypassing) request endpoint must be gone.
   assert.doesNotMatch(worker, /"\/api\/auth\/request"/);
+  // Invite-gated self-registration: the invite is validated BEFORE any OTP is
+  // sent, and the account is only created once the OTP proves email ownership.
+  assert.match(worker, /\/api\/auth\/register/);
+  assert.match(worker, /async function handleAuthRegister/);
+  assert.match(worker, /async function validateInviteForRegistration/);
+  assert.match(worker, /async function commitPendingRegistration/);
+  assert.match(worker, /commercial_invite_codes/);
+  // Admin can mint a 24h, single-use, email-bound tester invite.
+  assert.match(worker, /24 小時邀請碼/);
+  assert.match(worker, /testerForm/);
   // Admin can list / add / delete who may log in, from the /admin UI.
   assert.match(worker, /async function handleAdminCredentials/);
   assert.match(worker, /\/api\/admin\/credentials/);

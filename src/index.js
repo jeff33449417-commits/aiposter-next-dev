@@ -629,6 +629,130 @@ async function handleAdminCredentials(request, env, user) {
   return json({ ok: true, email });
 }
 
+// Invite gate for self-registration. Reuses the existing commercial invite
+// codes (email binding, expiry, redemption limits). Returns {ok} or a reason.
+async function validateInviteForRegistration(env, code, email) {
+  const invite = await env.DB.prepare(
+    `SELECT code, customer_id, email, plan, role, app_version_id, max_redemptions,
+            redemption_count, expires_at, status, notes
+     FROM commercial_invite_codes
+     WHERE code = ?`
+  ).bind(code).first();
+
+  if (!invite) return { ok: false, message: "邀請碼不存在。" };
+  if (invite.status !== "active") return { ok: false, message: "此邀請碼已失效或已被使用。" };
+  if (invite.expires_at && Date.parse(invite.expires_at) < Date.now()) {
+    await env.DB.prepare(
+      `UPDATE commercial_invite_codes SET status = 'expired', updated_at = datetime('now') WHERE code = ?`
+    ).bind(invite.code).run();
+    return { ok: false, message: "此邀請碼已過期。" };
+  }
+  const inviteEmail = normalizeEmail(invite.email);
+  if (inviteEmail && inviteEmail !== email) {
+    return { ok: false, message: "此邀請碼不屬於這個 email。" };
+  }
+  if (Number(invite.redemption_count || 0) + 1 > Number(invite.max_redemptions || 1)) {
+    return { ok: false, message: "此邀請碼已達使用次數上限。" };
+  }
+  return { ok: true, invite };
+}
+
+// Self-registration step 1: invite code + email + chosen password.
+// The invite is validated FIRST — an invalid/expired code never sends an OTP.
+async function handleAuthRegister(request, env) {
+  if (!authEnabled(env)) {
+    return json({ ok: false, code: "AUTH_DISABLED", message: "Email 登入尚未啟用。" }, { status: 404 });
+  }
+  if (request.method !== "POST") {
+    return json({ ok: false, code: "METHOD_NOT_ALLOWED", message: "Only POST." }, { status: 405, headers: { allow: "POST" } });
+  }
+
+  const ip = clientIp(request) || "anonymous";
+  if (await authRateLimited(env, request, [`regip:${ip}`])) return rateLimitedResponse();
+
+  let body;
+  try { body = await request.json(); } catch (_) { body = {}; }
+  const code = normalizeInviteCode(body.code);
+  const email = normalizeEmail(body.email);
+  const password = String(body.password || "");
+  if (!code || !EMAIL_RE.test(email) || email.length > 254 || password.length < 6) {
+    return json({ ok: false, code: "INVALID_INPUT", message: "請填寫邀請碼、有效 email，密碼至少 6 碼。" }, { status: 400 });
+  }
+
+  if (await authRateLimited(env, request, [`regemail:${email}`])) return rateLimitedResponse();
+
+  const check = await validateInviteForRegistration(env, code, email);
+  if (!check.ok) {
+    return json({ ok: false, code: "INVITE_INVALID", message: check.message }, { status: 403 });
+  }
+
+  // Hold the registration until the OTP proves the address belongs to them.
+  const passwordHash = await hashPassword(password);
+  await env.APP_KV.put(`pendingreg:${email}`, JSON.stringify({ passwordHash, code }), { expirationTtl: OTP_TTL_SECONDS });
+
+  const otp = generateOtpCode();
+  const otpHash = base64urlEncode(await sha256Bytes(`${email}:${otp}`));
+  await env.APP_KV.put(`otp:${email}`, JSON.stringify({ codeHash: otpHash, attempts: 0 }), { expirationTtl: OTP_TTL_SECONDS });
+
+  const sent = await sendAuthEmail(env, email, "AI Poster 註冊驗證碼", otpEmailHtml(otp));
+  if (!sent) {
+    return json({ ok: false, code: "EMAIL_SEND_FAILED", message: "驗證信寄送失敗，請稍後再試。" }, { status: 502 });
+  }
+  return json({ ok: true, stage: "otp", message: "邀請碼有效，驗證碼已寄出，請至 email 查收。" });
+}
+
+// Called after a successful OTP verify: if this address was mid-registration,
+// create its login and redeem the invite (plan/role) atomically enough for D1.
+async function commitPendingRegistration(env, email) {
+  const pending = await env.APP_KV.get(`pendingreg:${email}`, "json");
+  if (!pending) return;
+
+  const check = await validateInviteForRegistration(env, pending.code, email);
+  if (!check.ok) {
+    await env.APP_KV.delete(`pendingreg:${email}`);
+    return;
+  }
+  const invite = check.invite;
+  const plan = normalizePlan(invite.plan);
+  const role = normalizeRole(invite.role || roleForPlan(plan));
+
+  await env.DB.prepare(
+    `INSERT INTO auth_credentials (email, password_hash, created_at, updated_at)
+     VALUES (?, ?, datetime('now'), datetime('now'))
+     ON CONFLICT(email) DO UPDATE SET password_hash = excluded.password_hash, updated_at = datetime('now')`
+  ).bind(email, pending.passwordHash).run();
+
+  await env.DB.prepare(
+    `INSERT INTO user_app_assignments
+      (email, display_name, app_version_id, plan, role, status, feature_overrides_json, notes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'active', '{}', ?, datetime('now'), datetime('now'))
+     ON CONFLICT(email) DO UPDATE SET
+       app_version_id = excluded.app_version_id,
+       plan = excluded.plan,
+       role = excluded.role,
+       status = 'active',
+       updated_at = datetime('now')`
+  ).bind(
+    email,
+    email,
+    invite.app_version_id || "default",
+    plan,
+    role,
+    `Registered via invite ${invite.code}`.slice(0, 1000)
+  ).run();
+
+  const nextCount = Number(invite.redemption_count || 0) + 1;
+  const exhausted = nextCount >= Number(invite.max_redemptions || 1);
+  await env.DB.prepare(
+    `UPDATE commercial_invite_codes
+     SET redemption_count = ?, status = ?, updated_at = datetime('now')
+     WHERE code = ?`
+  ).bind(nextCount, exhausted ? "redeemed" : "active", invite.code).run();
+
+  await env.APP_KV.delete(`pendingreg:${email}`);
+  await bustUserCache(env, email);
+}
+
 async function handleAuthVerify(request, env) {
   if (!authEnabled(env)) {
     return json({ ok: false, code: "AUTH_DISABLED", message: "Email 登入尚未啟用。" }, { status: 404 });
@@ -668,6 +792,9 @@ async function handleAuthVerify(request, env) {
   }
 
   await env.APP_KV.delete(`otp:${email}`);
+  // If this address was registering via an invite, the OTP just proved they own
+  // it — create the login and redeem the invite before issuing the session.
+  await commitPendingRegistration(env, email);
   const token = await createSessionToken(env, email);
   return json({ ok: true, email }, {
     headers: { "set-cookie": sessionCookie(token, SESSION_TTL_SECONDS) }
@@ -3435,6 +3562,23 @@ const ADMIN_HTML = `<!doctype html>
           <button type="submit">新增 / 重設密碼</button>
         </form>
         <div id="credentialTable"></div>
+        <hr style="margin:18px 0; border:0; border-top:1px solid #e2e8f0;">
+        <h3 style="margin:0 0 6px;">新增測試者（24 小時邀請碼）</h3>
+        <p class="muted">輸入客戶 email → 產生 <strong>24 小時內有效、限用 1 次</strong>的邀請碼。對方用「我有邀請碼」自助註冊、自訂密碼，不必你發密碼。</p>
+        <form id="testerForm">
+          <label>客戶 Email
+            <input name="email" type="email" placeholder="customer@example.com" required>
+          </label>
+          <label>方案
+            <select name="plan">
+              <option value="beta">beta</option>
+              <option value="pro">pro</option>
+              <option value="business">business</option>
+            </select>
+          </label>
+          <button type="submit">產生 24 小時邀請碼</button>
+        </form>
+        <div id="testerResult"></div>
       </section>
       <section>
         <h2>新增使用者設定</h2>
@@ -3956,6 +4100,34 @@ const ADMIN_HTML = `<!doctype html>
       }
     });
 
+    qs("#testerForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const email = form.get("email");
+      // 24 hours from now, in the same ISO shape the invite table stores.
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      try {
+        const data = await api("/api/admin/invites", {
+          method: "POST",
+          body: JSON.stringify({
+            email,
+            plan: form.get("plan"),
+            maxRedemptions: 1,
+            expiresAt,
+            notes: "24h tester invite"
+          })
+        });
+        const code = (data.invite && data.invite.code) || "";
+        qs("#testerResult").innerHTML =
+          '<p>已為 <code>' + escapeHtml(email) + '</code> 產生邀請碼：<br>' +
+          '<strong style="font-size:20px; letter-spacing:2px;">' + escapeHtml(code) + '</strong><br>' +
+          '<span class="muted">24 小時內有效、限用 1 次、僅限這個 email 使用。</span></p>';
+        event.currentTarget.reset();
+      } catch (error) {
+        alert(error.message || "產生邀請碼失敗");
+      }
+    });
+
     qs("#credentialTable").addEventListener("click", async (event) => {
       const button = event.target.closest(".cred-del");
       if (!button) return;
@@ -4189,6 +4361,9 @@ export default {
     // (allowlist / invite) gates the OTP send; OTP verify issues the session.
     if (url.pathname === "/api/auth/login") {
       return handleAuthLogin(request, env);
+    }
+    if (url.pathname === "/api/auth/register") {
+      return handleAuthRegister(request, env);
     }
     if (url.pathname === "/api/auth/verify") {
       return handleAuthVerify(request, env);
