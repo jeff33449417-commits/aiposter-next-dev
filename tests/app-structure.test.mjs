@@ -150,6 +150,11 @@ test("self-serve email auth is present and flag-gated", () => {
   assert.match(worker, /auth_credentials/);
   // The OTP-only (password-bypassing) request endpoint must be gone.
   assert.doesNotMatch(worker, /"\/api\/auth\/request"/);
+  // Admin can list / add / delete who may log in, from the /admin UI.
+  assert.match(worker, /async function handleAdminCredentials/);
+  assert.match(worker, /\/api\/admin\/credentials/);
+  assert.match(worker, /登入帳號管理/);
+  assert.match(worker, /function renderCredentials/);
   // Gated on SESSION_SECRET; existing Access model preserved during transition.
   assert.match(worker, /function authEnabled/);
   assert.match(worker, /SESSION_SECRET/);

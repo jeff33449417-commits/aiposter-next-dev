@@ -578,13 +578,41 @@ async function handleAuthLogin(request, env) {
   return json({ ok: true, stage: "otp", message: "密碼正確，驗證碼已寄出，請至 email 查收。" });
 }
 
-// Admin provisions/updates an invited account's login password (hashed in D1).
+// Admin management of who may log in: list / add-update / delete accounts.
+// Passwords are PBKDF2-hashed in D1 and are NEVER returned by the API.
 async function handleAdminCredentials(request, env, user) {
   const forbidden = requireAdmin(user);
   if (forbidden) return forbidden;
-  if (request.method !== "POST") {
-    return json({ ok: false, code: "METHOD_NOT_ALLOWED", message: "Only POST." }, { status: 405, headers: { allow: "POST" } });
+
+  if (request.method === "GET") {
+    const rows = await env.DB.prepare(
+      `SELECT email, created_at, updated_at FROM auth_credentials ORDER BY updated_at DESC LIMIT 500`
+    ).all();
+    return json({
+      ok: true,
+      // Managed here (editable).
+      accounts: (rows.results || []).map((row) => ({ ...row, source: "db" })),
+      // Bootstrap accounts from the AUTH_ACCOUNTS secret (read-only here).
+      envAccounts: Array.from(parseAuthAccounts(env).keys()).map((email) => ({ email, source: "env" }))
+    });
   }
+
+  if (request.method === "DELETE") {
+    let body;
+    try { body = await request.json(); } catch (_) { body = {}; }
+    const email = normalizeEmail(body.email);
+    if (!EMAIL_RE.test(email)) {
+      return json({ ok: false, code: "INVALID_INPUT", message: "email 格式錯誤。" }, { status: 400 });
+    }
+    await env.DB.prepare(`DELETE FROM auth_credentials WHERE email = ?`).bind(email).run();
+    await bustUserCache(env, email);
+    return json({ ok: true, email });
+  }
+
+  if (request.method !== "POST") {
+    return json({ ok: false, code: "METHOD_NOT_ALLOWED", message: "Only GET/POST/DELETE." }, { status: 405, headers: { allow: "GET, POST, DELETE" } });
+  }
+
   let body;
   try { body = await request.json(); } catch (_) { body = {}; }
   const email = normalizeEmail(body.email);
@@ -3395,6 +3423,20 @@ const ADMIN_HTML = `<!doctype html>
   <main>
     <div class="grid">
       <section>
+        <h2>登入帳號管理</h2>
+        <p class="muted">只有這裡列出的帳號可以登入(email + 密碼 → 6 碼驗證碼)。其他人一律擋掉。</p>
+        <form id="credentialForm">
+          <label>Email
+            <input name="email" type="email" placeholder="user@example.com" required>
+          </label>
+          <label>密碼（至少 6 碼）
+            <input name="password" type="text" placeholder="設定或重設密碼" minlength="6" required>
+          </label>
+          <button type="submit">新增 / 重設密碼</button>
+        </form>
+        <div id="credentialTable"></div>
+      </section>
+      <section>
         <h2>新增使用者設定</h2>
         <form id="assignmentForm">
           <label>Email
@@ -3647,6 +3689,7 @@ const ADMIN_HTML = `<!doctype html>
     const state = {
       versions: [],
       assignments: [],
+      credentials: { accounts: [], envAccounts: [] },
       commercial: {
         plans: [],
         customers: [],
@@ -3722,6 +3765,25 @@ const ADMIN_HTML = `<!doctype html>
         '</span></td><td>' + (version.isDefault ? '是' : '') + '</td><td><code>' +
         escapeHtml(JSON.stringify(version.config || {})) + '</code></td></tr>').join("") +
         '</tbody></table>';
+    }
+
+    function renderCredentials() {
+      const cred = state.credentials || { accounts: [], envAccounts: [] };
+      const envRows = (cred.envAccounts || []).map((item) =>
+        '<tr><td><code>' + escapeHtml(item.email) + '</code></td>' +
+        '<td><span class="muted">AUTH_ACCOUNTS 密鑰</span></td>' +
+        '<td><span class="muted">需改密鑰</span></td></tr>').join("");
+      const dbRows = (cred.accounts || []).map((item) =>
+        '<tr><td><code>' + escapeHtml(item.email) + '</code></td>' +
+        '<td>後台管理<br><span class="muted">更新 ' + escapeHtml(item.updated_at || "") + '</span></td>' +
+        '<td><button type="button" class="cred-del" data-email="' + escapeHtml(item.email) + '">刪除</button></td></tr>').join("");
+      if (!envRows && !dbRows) {
+        qs("#credentialTable").innerHTML = '<p class="muted">尚無可登入帳號。</p>';
+        return;
+      }
+      qs("#credentialTable").innerHTML =
+        '<table><thead><tr><th>Email</th><th>來源</th><th>操作</th></tr></thead><tbody>' +
+        envRows + dbRows + '</tbody></table>';
     }
 
     function renderAssignments() {
@@ -3849,12 +3911,17 @@ const ADMIN_HTML = `<!doctype html>
     }
 
     async function loadAdmin() {
-      const [data, commercial] = await Promise.all([
+      const [data, commercial, credentials] = await Promise.all([
         api("/api/admin/overview"),
-        api("/api/admin/commercial")
+        api("/api/admin/commercial"),
+        api("/api/admin/credentials")
       ]);
       state.versions = data.versions || [];
       state.assignments = data.assignments || [];
+      state.credentials = {
+        accounts: credentials.accounts || [],
+        envAccounts: credentials.envAccounts || []
+      };
       state.commercial = {
         plans: commercial.plans || [],
         customers: commercial.customers || [],
@@ -3866,9 +3933,44 @@ const ADMIN_HTML = `<!doctype html>
         backups: commercial.backups || []
       };
       renderVersions();
+      renderCredentials();
       renderAssignments();
       renderCommercial();
     }
+
+    qs("#credentialForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      try {
+        await api("/api/admin/credentials", {
+          method: "POST",
+          body: JSON.stringify({
+            email: form.get("email"),
+            password: form.get("password")
+          })
+        });
+        event.currentTarget.reset();
+        await loadAdmin();
+      } catch (error) {
+        alert(error.message || "新增帳號失敗");
+      }
+    });
+
+    qs("#credentialTable").addEventListener("click", async (event) => {
+      const button = event.target.closest(".cred-del");
+      if (!button) return;
+      const email = button.dataset.email;
+      if (!window.confirm("確定移除 " + email + " 的登入權限？")) return;
+      try {
+        await api("/api/admin/credentials", {
+          method: "DELETE",
+          body: JSON.stringify({ email })
+        });
+        await loadAdmin();
+      } catch (error) {
+        alert(error.message || "刪除失敗");
+      }
+    });
 
     qs("#refreshButton").addEventListener("click", () => {
       loadAdmin().catch((error) => alert(error.message));
