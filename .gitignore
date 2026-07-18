@@ -5,3 +5,18 @@ work/
 
 .DS_Store
 *.log
+
+# --- 金鑰與敏感檔（SECURITY_RULES.md §3 — Layer 1）---
+.env
+.env.*
+!.env.example
+!.env.sample
+.dev.vars
+*.key
+*.pem
+*.p12
+*.pfx
+*.der
+*id_rsa*
+credentials*.json
+serviceAccount*.json
